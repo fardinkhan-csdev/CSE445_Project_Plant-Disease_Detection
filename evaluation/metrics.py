@@ -20,9 +20,10 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray, idx_to_class: Dict
     f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
     
     # Class-wise metrics
-    precision_per_class = precision_score(y_true, y_pred, average=None, zero_division=0)
-    recall_per_class = recall_score(y_true, y_pred, average=None, zero_division=0)
-    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
+    all_labels = list(idx_to_class.keys())
+    precision_per_class = precision_score(y_true, y_pred, average=None, zero_division=0, labels=all_labels)
+    recall_per_class = recall_score(y_true, y_pred, average=None, zero_division=0, labels=all_labels)
+    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0, labels=all_labels)
     
     # Create class-wise dictionaries
     precision = {}

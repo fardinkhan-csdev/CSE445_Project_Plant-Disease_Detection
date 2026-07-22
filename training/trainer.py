@@ -57,6 +57,19 @@ class BaseTrainer:
             self.device = torch.device('cpu')
             self.model.to(self.device)
         
+        speed_config = self.config.get('speed', {})
+        if self.device.type == 'cuda':
+            if speed_config.get('cudnn_benchmark', True):
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            if speed_config.get('compile', False):
+                self.model = torch.compile(self.model, mode='max-autotune')
+        
+        self.use_amp = bool(speed_config.get('mixed_precision', True)) and self.device.type == 'cuda'
+        if self.use_amp:
+            self.scaler = torch.amp.GradScaler('cuda')
+        
         # Training config
         training_config = self.config['training']
         self.epochs = int(training_config['epochs'])
@@ -118,19 +131,26 @@ class BaseTrainer:
         for batch in tqdm(self.train_loader, desc='Training'):
             # Dataset now returns (image, label, crop, disease, image_path)
             images, labels = batch[0], batch[1]
-            images = images.to(self.device)
-            labels = labels.to(self.device)
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
-
-            # Backward pass
-            loss.backward()
-            # Clip gradients to prevent spikes, especially during early LoRA training
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+            if self.use_amp:
+                with torch.amp.autocast('cuda'):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, labels)
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                outputs = self.model(images)
+                loss = self.criterion(outputs, labels)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
             
             # Track metrics
             total_loss += loss.item() * images.size(0)
@@ -151,11 +171,16 @@ class BaseTrainer:
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc='Validating'):
                 images, labels = batch[0], batch[1]
-                images = images.to(self.device)
-                labels = labels.to(self.device)
+                images = images.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
                 
-                outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                if self.use_amp:
+                    with torch.amp.autocast('cuda'):
+                        outputs = self.model(images)
+                        loss = self.criterion(outputs, labels)
+                else:
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, labels)
                 
                 total_loss += loss.item() * images.size(0)
                 _, predicted = torch.max(outputs.data, 1)

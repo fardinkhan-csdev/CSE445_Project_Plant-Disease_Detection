@@ -293,13 +293,13 @@
         <section id="tab-plantdoc" class="tab-pane">
             <div class="section-header">
                 <h2>🌍 Real-World Field Condition Evaluation (PlantDoc)</h2>
-                <p class="section-desc">Evaluates domain generalization retention when moving models from clean laboratory conditions (PlantVillage) to unconstrained agricultural field environments (PlantDoc).</p>
+                <p class="section-desc">Evaluates domain generalization retention when moving models from clean laboratory conditions (PlantVillage) to unconstrained agricultural field environments (PlantDoc). Three independent metrics are reported: raw images, segmented foreground, and cross-method ensemble.</p>
             </div>
 
             <div class="glass-card table-card">
                 <div class="table-header flex-header">
-                    <h3>🏆 Field Condition Benchmark & Domain Retention</h3>
-                    <button class="btn btn-secondary btn-sm" onclick="loadPlantDocResults()">🔄 Refresh Field Metrics</button>
+                    <h3>🏆 1st PlantDoc Test Result — Raw Images (Baseline)</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="loadPlantDocResults()">🔄 Refresh</button>
                 </div>
                 <div class="table-responsive">
                     <table id="plantdoc-table" class="data-table">
@@ -309,13 +309,81 @@
                                 <th>Checkpoint</th>
                                 <th>Split</th>
                                 <th>Accuracy</th>
+                                <th>F1 Macro</th>
+                                <th>Binary Acc</th>
+                                <th>Binary F1</th>
+                                <th>ROC AUC</th>
+                                <th>Both Correct</th>
+                                <th>Crop Only</th>
+                                <th>Disease Only</th>
+                                <th>None Correct</th>
                                 <th>Samples Tested</th>
                             </tr>
                         </thead>
                         <tbody>
+                            <tr><td colspan="13" style="text-align:center;">Run run_plantdoc.py to generate raw results.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="glass-card table-card" style="margin-top: 1.5rem;">
+                <div class="table-header flex-header">
+                    <h3>🎯 2nd PlantDoc Test Result — Segmented Foreground (HSV + Otsu + GrabCut)</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="loadPlantDocSegmented()">🔄 Refresh</button>
+                </div>
+                <div class="table-responsive">
+                    <table id="plantdoc-segmented-table" class="data-table">
+                        <thead>
                             <tr>
-                                <td colspan="6" style="text-align:center;">Run launcher_plantdoc.py option 2 to evaluate models on real-world field images.</td>
+                                <th>Method</th>
+                                <th>Checkpoint</th>
+                                <th>Split</th>
+                                <th>Accuracy</th>
+                                <th>F1 Macro</th>
+                                <th>Binary Acc</th>
+                                <th>Binary F1</th>
+                                <th>ROC AUC</th>
+                                <th>Both Correct</th>
+                                <th>Crop Only</th>
+                                <th>Disease Only</th>
+                                <th>None Correct</th>
+                                <th>Samples Tested</th>
                             </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td colspan="13" style="text-align:center;">Run run_plantdoc.py --segmented to generate segmented results.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="glass-card table-card" style="margin-top: 1.5rem;">
+                <div class="table-header flex-header">
+                    <h3>🤝 3rd PlantDoc Test Result — Ensemble (Best LoRA + Best QLoRA + Best QKLoRA, Segmented)</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="loadPlantDocEnsemble()">🔄 Refresh</button>
+                </div>
+                <div class="table-responsive">
+                    <table id="plantdoc-ensemble-table" class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Method</th>
+                                <th>Checkpoint</th>
+                                <th>Split</th>
+                                <th>Accuracy</th>
+                                <th>F1 Macro</th>
+                                <th>Binary Acc</th>
+                                <th>Binary F1</th>
+                                <th>ROC AUC</th>
+                                <th>Both Correct</th>
+                                <th>Crop Only</th>
+                                <th>Disease Only</th>
+                                <th>None Correct</th>
+                                <th>Samples Tested</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td colspan="13" style="text-align:center;">Run run_plantdoc.py --segmented --ensemble to generate ensemble results.</td></tr>
                         </tbody>
                     </table>
                 </div>

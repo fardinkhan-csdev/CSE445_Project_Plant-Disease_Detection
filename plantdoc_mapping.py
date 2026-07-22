@@ -3,7 +3,9 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image
+import cv2
+import numpy as np
+from PIL import Image, ImageFilter
 from torch.utils.data import Dataset
 
 
@@ -43,14 +45,112 @@ def normalize_label_name(label_name: str) -> str:
     return value.strip()
 
 
+def segment_leaf(pil_image: Image.Image, padding: float = 0.15) -> Image.Image:
+    """Remove background clutter using HSV + Otsu + GrabCut + morphology.
+
+    Pipeline (fast path):
+      1. Downscale to max 320px on longest edge for speed.
+      2. Convert to HSV color space.
+      3. Otsu thresholding on the Saturation channel to isolate leaf vs background.
+      4. Morphological pre-cleanup of the Otsu mask.
+      5. GrabCut with GMM refinement using the cleaned mask as initialization.
+      6. Morphological open+close to snap edges and remove floating noise.
+      7. Crop tightly around the leaf and paste onto a 255-white canvas.
+      8. Resize back to original resolution.
+    """
+    orig_w, orig_h = pil_image.size
+    max_side = 320
+    scale = min(1.0, max_side / max(orig_w, orig_h))
+    new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+    small = pil_image.resize((new_w, new_h), Image.Resampling.BILINEAR)
+
+    img = np.array(small)
+    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    sh, sw = img_bgr.shape[:2]
+
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    s_channel = hsv[:, :, 1]
+    v_channel = hsv[:, :, 2]
+
+    # Otsu thresholding on saturation (green leaves = high saturation)
+    _, otsu_mask = cv2.threshold(s_channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, otsu_v = cv2.threshold(v_channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Combine: high saturation AND not too dark
+    combined = cv2.bitwise_and(otsu_mask, otsu_v)
+
+    # Pre-cleanup
+    kernel_pre = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_pre)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_pre)
+
+    # Build GrabCut mask from Otsu result
+    mask = np.full((sh, sw), cv2.GC_PR_BGD, dtype=np.uint8)
+    mask[combined > 0] = cv2.GC_PR_FGD
+    # Central margin as definite foreground
+    margin = 0.15
+    cx0, cy0 = int(sw * margin), int(sh * margin)
+    cx1, cy1 = int(sw * (1.0 - margin)), int(sh * (1.0 - margin))
+    mask[cy0:cy1, cx0:cx1] = cv2.GC_PR_FGD
+    # Border = definite background
+    mask[0, :] = cv2.GC_BGD
+    mask[-1, :] = cv2.GC_BGD
+    mask[:, 0] = cv2.GC_BGD
+    mask[:, -1] = cv2.GC_BGD
+
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
+    cv2.grabCut(img_bgr, mask, None, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_MASK)
+    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype(np.uint8)
+
+    # Morphological filtering (snap edges + delete floating noise)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, kernel)
+    mask2 = cv2.morphologyEx(mask2, cv2.MORPH_OPEN, kernel)
+
+    ys, xs = np.where(mask2 > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return pil_image
+
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+
+    # Minimum leaf size guard: if detection is too small, fallback to original
+    if bw < 8 or bh < 8 or (bw * bh) < (sw * sh) * 0.05:
+        return pil_image
+
+    pad_x = int(bw * padding)
+    pad_y = int(bh * padding)
+    cx0 = max(0, x0 - pad_x)
+    cy0 = max(0, y0 - pad_y)
+    cx1 = min(sw, x1 + pad_x)
+    cy1 = min(sh, y1 + pad_y)
+
+    cropped_small = img_bgr[cy0:cy1, cx0:cx1]
+    cropped_mask = mask2[cy0:cy1, cx0:cx1]
+
+    canvas = np.ones_like(cropped_small) * 255
+    canvas = np.where(cropped_mask[:, :, np.newaxis].astype(bool), cropped_small, canvas).astype(np.uint8)
+
+    # Resize back to original resolution
+    canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    result = Image.fromarray(canvas_rgb)
+    if scale < 1.0:
+        result = result.resize((orig_w, orig_h), Image.Resampling.BILINEAR)
+    return result
+
+
 class PlantDocCOCODataset(Dataset):
     """Load PlantDoc images from COCO annotations and map them to PlantVillage labels."""
 
-    def __init__(self, root_dir: str, split_name: str, class_to_idx: Dict[str, int], transform=None):
+    def __init__(self, root_dir: str, split_name: str, class_to_idx: Dict[str, int], transform=None, apply_segmentation: bool = False):
         self.root_dir = root_dir
         self.split_name = split_name
         self.transform = transform
         self.class_to_idx = class_to_idx
+        self.idx_to_class = {idx: cls for cls, idx in class_to_idx.items()}
+        self.apply_segmentation = apply_segmentation
         self.samples: List[Tuple[str, int]] = []
 
         annotation_path = os.path.join(root_dir, split_name, "_annotations.coco.json")
@@ -105,9 +205,20 @@ class PlantDocCOCODataset(Dataset):
     def __getitem__(self, idx: int):
         image_path, label_idx = self.samples[idx]
         image = Image.open(image_path).convert("RGB")
+
+        if self.apply_segmentation:
+            image = segment_leaf(image)
+
         if self.transform:
             image = self.transform(image)
-        return image, label_idx
+
+        label_name = self.idx_to_class.get(label_idx, str(label_idx))
+        if "___" in label_name:
+            crop, disease = label_name.split("___", 1)
+        else:
+            crop, disease = label_name, "healthy"
+
+        return image, label_idx, crop, disease, image_path
 
 
 def get_available_plantdoc_splits(root_dir: str) -> List[str]:

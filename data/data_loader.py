@@ -449,16 +449,21 @@ def get_data_loaders(config_path: str = 'config/base_config.yaml') -> Tuple[Data
     if use_weighted_sampler:
         train_sampler = build_weighted_sampler(train_samples, class_to_idx)
 
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": train_sampler is None,
+        "sampler": train_sampler,
+        "num_workers": num_workers,
+        "pin_memory": _pin,
+        "persistent_workers": True,
+        "prefetch_factor": 4,
+    }
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=num_workers,
-        pin_memory=_pin,
+        **kwargs,
     )
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=_pin)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=_pin)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=_pin, persistent_workers=True, prefetch_factor=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=_pin, persistent_workers=True, prefetch_factor=4)
     
     # Get class information
     idx_to_class = {idx: cls for cls, idx in class_to_idx.items()}

@@ -106,6 +106,32 @@ class WebUIRequestHandler(SimpleHTTPRequestHandler):
             self.send_json_response({"field_results": data})
             return
 
+        elif path == "/api/plantdoc_segmented":
+            csv_path = os.path.join(PROJECT_ROOT, "experiments", "results", "eval", "plantdoc_segmented_results.csv")
+            data = []
+            if os.path.exists(csv_path):
+                import pandas as pd
+                try:
+                    df = pd.read_csv(csv_path)
+                    data = df.to_dict(orient="records")
+                except Exception as e:
+                    print("Error reading plantdoc_segmented_results.csv:", e)
+            self.send_json_response({"field_results": data})
+            return
+
+        elif path == "/api/plantdoc_ensemble":
+            csv_path = os.path.join(PROJECT_ROOT, "experiments", "results", "eval", "plantdoc_ensemble_segmented_results.csv")
+            data = []
+            if os.path.exists(csv_path):
+                import pandas as pd
+                try:
+                    df = pd.read_csv(csv_path)
+                    data = df.to_dict(orient="records")
+                except Exception as e:
+                    print("Error reading plantdoc_ensemble_segmented_results.csv:", e)
+            self.send_json_response({"field_results": data})
+            return
+
         elif path == "/api/checkpoints":
             eval_dir = os.path.join(PROJECT_ROOT, "experiments", "results", "eval")
             checkpoints_dir = os.path.join(PROJECT_ROOT, "experiments", "results", "checkpoints")

@@ -24,3 +24,11 @@ logging:
   checkpoint_dir: "experiments/results/checkpoints"
   plot_dir: "experiments/results/plots"
   save_epoch_checkpoints: false
+
+speed:
+  cudnn_benchmark: true
+  mixed_precision: true
+  compile: false
+  num_workers: 8
+  prefetch_factor: 4
+  persistent_workers: true

@@ -519,8 +519,8 @@ function initImageZoomModal() {
 }
 
 /* --------------------------------------------------------------------------
-   8. PlantDoc Real-World Field Benchmark Loader
-   -------------------------------------------------------------------------- */
+    8. PlantDoc Real-World Field Benchmark Loader
+    -------------------------------------------------------------------------- */
 async function loadPlantDocResults() {
     try {
         const res = await fetch('/api/plantdoc');
@@ -531,25 +531,117 @@ async function loadPlantDocResults() {
         tbody.innerHTML = '';
 
         if (results.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">No real-world field benchmark data found. Run launcher_plantdoc.py option 2 to evaluate.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;">No real-world field benchmark data found. Run run_plantdoc.py to evaluate.</td></tr>';
             return;
         }
 
         results.forEach(r => {
             const tr = document.createElement('tr');
-            const accuracy = r.accuracy !== undefined && r.accuracy !== null ? r.accuracy.toFixed(2) + '%' : '-';
-            const sampleCount = r.sample_count !== undefined && r.sample_count !== null ? r.sample_count : '-';
             tr.innerHTML = `
                 <td><span class="badge badge-tech">${r.method}</span></td>
                 <td>${r.checkpoint || '-'}</td>
                 <td>${r.split || '-'}</td>
-                <td><strong>${accuracy}</strong></td>
-                <td>${sampleCount}</td>
+                <td><strong>${fmtPct(r.accuracy)}</strong></td>
+                <td>${fmtPct(r.f1_macro)}</td>
+                <td>${fmtPct(r.binary_accuracy)}</td>
+                <td>${fmtPct(r.binary_f1)}</td>
+                <td>${fmtN(r.binary_roc_auc)}</td>
+                <td>${fmtPct(r.both_correct_pct)}</td>
+                <td>${fmtPct(r.name_only_correct_pct)}</td>
+                <td>${fmtPct(r.disease_only_correct_pct)}</td>
+                <td>${fmtPct(r.none_correct_pct)}</td>
+                <td>${fmtInt(r.sample_count)}</td>
             `;
             tbody.appendChild(tr);
         });
     } catch (err) {
         console.error("Error loading PlantDoc results:", err);
     }
+}
+
+async function loadPlantDocSegmented() {
+    try {
+        const res = await fetch('/api/plantdoc_segmented');
+        const data = await res.json();
+        const results = data.field_results || [];
+
+        const tbody = document.querySelector('#plantdoc-segmented-table tbody');
+        tbody.innerHTML = '';
+
+        if (results.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;">No segmented field benchmark data found. Run run_plantdoc.py --segmented to evaluate.</td></tr>';
+            return;
+        }
+
+        results.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span class="badge badge-tech">${r.method}</span></td>
+                <td>${r.checkpoint || '-'}</td>
+                <td>${r.split || '-'}</td>
+                <td><strong>${fmtPct(r.accuracy)}</strong></td>
+                <td>${fmtPct(r.f1_macro)}</td>
+                <td>${fmtPct(r.binary_accuracy)}</td>
+                <td>${fmtPct(r.binary_f1)}</td>
+                <td>${fmtN(r.binary_roc_auc)}</td>
+                <td>${fmtPct(r.both_correct_pct)}</td>
+                <td>${fmtPct(r.name_only_correct_pct)}</td>
+                <td>${fmtPct(r.disease_only_correct_pct)}</td>
+                <td>${fmtPct(r.none_correct_pct)}</td>
+                <td>${fmtInt(r.sample_count)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        console.error("Error loading segmented PlantDoc results:", err);
+    }
+}
+
+async function loadPlantDocEnsemble() {
+    try {
+        const res = await fetch('/api/plantdoc_ensemble');
+        const data = await res.json();
+        const results = data.field_results || [];
+
+        const tbody = document.querySelector('#plantdoc-ensemble-table tbody');
+        tbody.innerHTML = '';
+
+        if (results.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;">No ensemble field benchmark data found. Run run_plantdoc.py --segmented --ensemble to evaluate.</td></tr>';
+            return;
+        }
+
+        results.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span class="badge badge-tech">${r.method}</span></td>
+                <td>${r.checkpoint || '-'}</td>
+                <td>${r.split || '-'}</td>
+                <td><strong>${fmtPct(r.accuracy)}</strong></td>
+                <td>${fmtPct(r.f1_macro)}</td>
+                <td>${fmtPct(r.binary_accuracy)}</td>
+                <td>${fmtPct(r.binary_f1)}</td>
+                <td>${fmtN(r.binary_roc_auc)}</td>
+                <td>${fmtPct(r.both_correct_pct)}</td>
+                <td>${fmtPct(r.name_only_correct_pct)}</td>
+                <td>${fmtPct(r.disease_only_correct_pct)}</td>
+                <td>${fmtPct(r.none_correct_pct)}</td>
+                <td>${fmtInt(r.sample_count)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        console.error("Error loading ensemble PlantDoc results:", err);
+    }
+}
+
+function fmtPct(v) {
+    return v !== undefined && v !== null && !isNaN(v) ? v.toFixed(2) + '%' : '-';
+}
+function fmtN(v) {
+    return v !== undefined && v !== null && !isNaN(v) ? v.toFixed(4) : '-';
+}
+function fmtInt(v) {
+    return v !== undefined && v !== null && !isNaN(v) ? v : '-';
 }
 
