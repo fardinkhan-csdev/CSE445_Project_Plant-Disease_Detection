@@ -202,13 +202,13 @@
         <!-- ================= TAB 3: CHECKPOINT EXPLORER ================= -->
         <section id="tab-checkpoints" class="tab-pane">
             <div class="pane-header">
-                <h2>Comprehensive Checkpoint Evaluator & Metric Explorer</h2>
-                <p>Detailed performance breakdown of every saved model checkpoint across multiclass, binary, and crop/disease correctness metrics.</p>
+                <h2>Checkpoint Evaluator & Metric Explorer</h2>
+                <p>Detailed performance breakdown of the 9 canonical checkpoints (best, last, latest across LoRA, QLoRA, and Q/K LoRA) across multiclass, binary, and crop/disease correctness metrics.</p>
             </div>
 
             <div class="card glass-card">
                 <div class="card-header">
-                    <h3>All Checkpoints Summary</h3>
+                    <h3>9 Canonical Checkpoints Summary</h3>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -248,6 +248,7 @@
                     <select id="plot-method-select" class="custom-select filter-select">
                         <option value="lora" selected>LoRA Plots</option>
                         <option value="qlora">QLoRA Plots</option>
+                        <option value="qklora">Q/K LoRA Plots</option>
                     </select>
                 </div>
             </div>
@@ -306,9 +307,8 @@
                             <tr>
                                 <th>Method</th>
                                 <th>Checkpoint</th>
-                                <th>Lab Accuracy (PlantVillage)</th>
-                                <th>Field Accuracy (PlantDoc)</th>
-                                <th>Domain Retention (%)</th>
+                                <th>Split</th>
+                                <th>Accuracy</th>
                                 <th>Samples Tested</th>
                             </tr>
                         </thead>

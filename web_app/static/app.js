@@ -291,23 +291,33 @@ async function loadCheckpoints() {
         tbody.innerHTML = '';
 
         if (checkpoints.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;">No checkpoint ranking files found in experiments/results/eval/.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;">No canonical checkpoint ranking files found in experiments/results/eval/. Expected 9 checkpoints: best, last, latest per method (LoRA, QLoRA, Q/K LoRA).</td></tr>';
             return;
         }
 
-        checkpoints.forEach(ck => {
+        const normalized = checkpoints.filter(ck => ck && ck.checkpoint).sort((a, b) => {
+            const aName = (a.checkpoint || '').toLowerCase();
+            const bName = (b.checkpoint || '').toLowerCase();
+            if (aName.includes('best') && !bName.includes('best')) return -1;
+            if (!aName.includes('best') && bName.includes('best')) return 1;
+            return aName.localeCompare(bName);
+        });
+
+        normalized.forEach(ck => {
             const tr = document.createElement('tr');
+            const checkpointName = ck.checkpoint ? ck.checkpoint.split('\\').pop().split('/').pop() : '-';
+            const methodName = ck.method || 'UNKNOWN';
             tr.innerHTML = `
-                <td><span class="badge badge-tech">${ck.method}</span></td>
-                <td>${ck.checkpoint ? ck.checkpoint.split('\\').pop().split('/').pop() : '-'}</td>
-                <td><strong>${ck.accuracy ? (ck.accuracy * 100).toFixed(2) + '%' : '-'}</strong></td>
-                <td>${ck.f1_macro ? (ck.f1_macro * 100).toFixed(2) + '%' : '-'}</td>
-                <td>${ck.binary_accuracy ? (ck.binary_accuracy * 100).toFixed(2) + '%' : '-'}</td>
-                <td>${ck.binary_f1 ? (ck.binary_f1 * 100).toFixed(2) + '%' : '-'}</td>
-                <td>${ck.binary_roc_auc ? ck.binary_roc_auc.toFixed(4) : '-'}</td>
-                <td>${ck.both_correct_pct ? ck.both_correct_pct.toFixed(2) + '%' : '-'}</td>
-                <td>${ck.name_only_correct_pct ? ck.name_only_correct_pct.toFixed(2) + '%' : '-'}</td>
-                <td>${ck.size_mb ? ck.size_mb + ' MB' : '-'}</td>
+                <td><span class="badge badge-tech">${methodName}</span></td>
+                <td>${checkpointName}</td>
+                <td><strong>${ck.accuracy !== null && ck.accuracy !== undefined ? (ck.accuracy * 100).toFixed(2) + '%' : '-'}</strong></td>
+                <td>${ck.f1_macro !== null && ck.f1_macro !== undefined ? (ck.f1_macro * 100).toFixed(2) + '%' : '-'}</td>
+                <td>${ck.binary_accuracy !== null && ck.binary_accuracy !== undefined ? (ck.binary_accuracy * 100).toFixed(2) + '%' : '-'}</td>
+                <td>${ck.binary_f1 !== null && ck.binary_f1 !== undefined ? (ck.binary_f1 * 100).toFixed(2) + '%' : '-'}</td>
+                <td>${ck.binary_roc_auc !== null && ck.binary_roc_auc !== undefined ? ck.binary_roc_auc.toFixed(4) : '-'}</td>
+                <td>${ck.both_correct_pct !== null && ck.both_correct_pct !== undefined ? ck.both_correct_pct.toFixed(2) + '%' : '-'}</td>
+                <td>${ck.name_only_correct_pct !== null && ck.name_only_correct_pct !== undefined ? ck.name_only_correct_pct.toFixed(2) + '%' : '-'}</td>
+                <td>${ck.size_mb !== null && ck.size_mb !== undefined ? ck.size_mb + ' MB' : '-'}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -323,7 +333,30 @@ function initPlotFilter() {
     const filterSelect = document.getElementById('plot-method-select');
     if (!filterSelect) return;
 
-    filterSelect.addEventListener('change', () => {
+    const resolvePlotPath = async (method, suffix) => {
+        const candidates = [
+            `${method}_20260722_164943_${suffix}.png`,
+            `${method}_${suffix}.png`
+        ];
+
+        const checkExists = async (name) => {
+            try {
+                const res = await fetch(`/plots/${name}`, { method: 'HEAD' });
+                return res.ok ? name : null;
+            } catch {
+                return null;
+            }
+        };
+
+        for (const c of candidates) {
+            const found = await checkExists(c);
+            if (found) return `/plots/${found}`;
+        }
+
+        return `/plots/${candidates[0]}`;
+    };
+
+    const updatePlotImages = async () => {
         const method = filterSelect.value.toLowerCase();
         const displayMethod = method.toUpperCase();
 
@@ -339,15 +372,22 @@ function initPlotFilter() {
         headingCM.textContent = `📊 Confusion Matrix Heatmap (${displayMethod})`;
         headingMetrics.textContent = `🎯 Per-Class Precision, Recall & F1 Bar Chart (${displayMethod})`;
 
-        imgCurves.src = `/plots/${method}_training_curves.png`;
+        const curvePath = await resolvePlotPath(method, 'training_curves');
+        const cmPath = await resolvePlotPath(method, 'confusion_matrix');
+        const metricsPath = await resolvePlotPath(method, 'class_metrics');
+
+        imgCurves.src = curvePath;
         imgCurves.alt = `${displayMethod} Training Curves`;
 
-        imgCM.src = `/plots/${method}_confusion_matrix.png`;
+        imgCM.src = cmPath;
         imgCM.alt = `${displayMethod} Confusion Matrix`;
 
-        imgMetrics.src = `/plots/${method}_class_metrics.png`;
+        imgMetrics.src = metricsPath;
         imgMetrics.alt = `${displayMethod} Class Metrics`;
-    });
+    };
+
+    filterSelect.addEventListener('change', () => updatePlotImages());
+    updatePlotImages();
 }
 
 /* --------------------------------------------------------------------------
@@ -497,13 +537,14 @@ async function loadPlantDocResults() {
 
         results.forEach(r => {
             const tr = document.createElement('tr');
+            const accuracy = r.accuracy !== undefined && r.accuracy !== null ? r.accuracy.toFixed(2) + '%' : '-';
+            const sampleCount = r.sample_count !== undefined && r.sample_count !== null ? r.sample_count : '-';
             tr.innerHTML = `
                 <td><span class="badge badge-tech">${r.method}</span></td>
-                <td>${r.best_checkpoint || '-'}</td>
-                <td>${r.plantvillage_lab_acc}%</td>
-                <td><strong>${r.plantdoc_field_acc}%</strong></td>
-                <td><span class="badge badge-success">${r.domain_retention_pct}%</span></td>
-                <td>${r.field_samples_tested}</td>
+                <td>${r.checkpoint || '-'}</td>
+                <td>${r.split || '-'}</td>
+                <td><strong>${accuracy}</strong></td>
+                <td>${sampleCount}</td>
             `;
             tbody.appendChild(tr);
         });

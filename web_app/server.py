@@ -114,7 +114,7 @@ class WebUIRequestHandler(SimpleHTTPRequestHandler):
 
             if os.path.exists(eval_dir):
                 import pandas as pd
-                for f in os.listdir(eval_dir):
+                for f in sorted(os.listdir(eval_dir)):
                     if f.endswith("_checkpoint_ranking.csv"):
                         try:
                             df = pd.read_csv(os.path.join(eval_dir, f))
@@ -124,64 +124,92 @@ class WebUIRequestHandler(SimpleHTTPRequestHandler):
                                 r["method"] = method
                                 chk_name = os.path.basename(str(r.get("checkpoint", "")))
                                 seen_checkpoints.add(chk_name)
-                            checkpoints_data.extend(records)
+                            # Keep only the intended best/last/latest rows per method if present.
+                            if isinstance(df, pd.DataFrame):
+                                preferred = []
+                                for key in ["best", "last", "latest"]:
+                                    matches = [r for r in records if str(r.get("checkpoint", "")).lower().find(key) != -1]
+                                    if matches:
+                                        preferred.append(matches[0])
+                                if preferred:
+                                    checkpoints_data.extend(preferred)
+                                else:
+                                    checkpoints_data.extend(records)
                         except Exception:
                             pass
 
-            # Fallback: scan checkpoints_dir for any missing .pth files (e.g. QLoRA or QKLoRA)
+            # Fallback: scan checkpoints_dir for any missing canonical .pth files (best/last/latest only)
             if os.path.exists(checkpoints_dir):
                 for f in sorted(os.listdir(checkpoints_dir)):
-                    if f.endswith(".pth") and f not in seen_checkpoints:
-                        method_prefix = f.split("_")[0].upper()
-                        size_mb = round(os.path.getsize(os.path.join(checkpoints_dir, f)) / (1024 * 1024), 2)
-                        
-                        # Check if overall summary has test accuracy for best checkpoint
-                        acc = None
-                        f1 = None
-                        if "best" in f:
-                            csv_summary = os.path.join(PROJECT_ROOT, "experiments", "results", "experiment_results.csv")
-                            if os.path.exists(csv_summary):
-                                import pandas as pd
-                                try:
-                                    sdf = pd.read_csv(csv_summary)
-                                    row = sdf[sdf["experiment"].str.lower() == method_prefix.lower()]
-                                    if not row.empty:
-                                        acc = float(row.iloc[0].get("test_accuracy", 0))
-                                        f1 = float(row.iloc[0].get("test_f1_macro", 0))
-                                except Exception:
-                                    pass
+                    if not f.endswith(".pth") or f in seen_checkpoints:
+                        continue
+                    chk_lower = f.lower()
+                    if not (chk_lower.endswith("_best.pth") or chk_lower.endswith("_last.pth") or chk_lower.endswith("_latest.pth")):
+                        continue
+                    method_prefix = f.split("_")[0].upper()
+                    size_mb = round(os.path.getsize(os.path.join(checkpoints_dir, f)) / (1024 * 1024), 2)
+                    
+                    # Check if overall summary has test accuracy for best checkpoint
+                    acc = None
+                    f1 = None
+                    if chk_lower.endswith("_best.pth"):
+                        csv_summary = os.path.join(PROJECT_ROOT, "experiments", "results", "experiment_results.csv")
+                        if os.path.exists(csv_summary):
+                            import pandas as pd
+                            try:
+                                sdf = pd.read_csv(csv_summary)
+                                row = sdf[sdf["experiment"].str.lower() == method_prefix.lower()]
+                                if not row.empty:
+                                    acc = float(row.iloc[0].get("test_accuracy", 0))
+                                    f1 = float(row.iloc[0].get("test_f1_macro", 0))
+                            except Exception:
+                                pass
 
-                        checkpoints_data.append({
-                            "method": method_prefix,
-                            "checkpoint": f,
-                            "size_mb": size_mb,
-                            "accuracy": acc,
-                            "f1_macro": f1,
-                            "binary_accuracy": None,
-                            "binary_f1": None,
-                            "binary_roc_auc": None,
-                            "both_correct_pct": None,
-                            "name_only_correct_pct": None
-                        })
+                    checkpoints_data.append({
+                        "method": method_prefix,
+                        "checkpoint": f,
+                        "size_mb": size_mb,
+                        "accuracy": acc,
+                        "f1_macro": f1,
+                        "binary_accuracy": None,
+                        "binary_f1": None,
+                        "binary_roc_auc": None,
+                        "both_correct_pct": None,
+                        "name_only_correct_pct": None
+                    })
 
             self.send_json_response({"checkpoints": checkpoints_data})
             return
 
         elif path.startswith("/plots/"):
-            plot_name = os.path.basename(path)
-            plot_path = os.path.join(PROJECT_ROOT, "experiments", "results", "plots", plot_name)
-            if os.path.exists(plot_path):
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.end_headers()
-                with open(plot_path, "rb") as f:
-                    self.wfile.write(f.read())
-                return
-            else:
-                self.send_error(404, "Plot image not found")
-                return
+            self.send_plot(path)
+            return
 
         return super().do_GET()
+
+    def do_HEAD(self):
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+
+        if path.startswith("/plots/"):
+            self.send_plot(path)
+            return
+
+        return super().do_HEAD()
+
+    def send_plot(self, path, method="GET"):
+        plot_name = os.path.basename(path)
+        plot_path = os.path.join(PROJECT_ROOT, "experiments", "results", "plots", plot_name)
+        if os.path.exists(plot_path):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(os.path.getsize(plot_path)))
+            self.end_headers()
+            if method == "GET":
+                with open(plot_path, "rb") as f:
+                    self.wfile.write(f.read())
+        else:
+            self.send_error(404, "Plot image not found")
 
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path)
