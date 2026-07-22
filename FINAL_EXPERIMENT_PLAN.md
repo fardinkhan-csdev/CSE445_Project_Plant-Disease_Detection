@@ -129,5 +129,5 @@ These are not included in the shared benchmark because they are either unique to
 - Train on PlantVillage. **COMPLETED**
 - Evaluate on PlantDoc using the shared label subset only.
 - Report PlantDoc test performance as the primary transfer result.
-- Use PlantDoc train performance as a secondary comparison only.
+- Use PlantDoc train performance as a secondary comparison only, not primary.
 - Exclude uncommon or mismatched labels from the main benchmark to keep the evaluation clean and professional.
