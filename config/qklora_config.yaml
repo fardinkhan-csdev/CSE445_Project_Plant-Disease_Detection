@@ -1,0 +1,12 @@
+peft:
+  method: "qklora"
+  rank: 8
+  alpha: 16
+  dropout: 0.1
+  quantization:
+    bits: 8
+    quant_type: "int8"
+    q_rank: 16
+    k_rank: 4
+  q_target_modules: null
+  k_target_modules: null

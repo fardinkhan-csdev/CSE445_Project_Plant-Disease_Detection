@@ -1,0 +1,36 @@
+# Data
+data/raw/
+data/processed/
+data/*.zip
+data/*.log
+
+# Experiments
+experiments/results/
+experiments/results/checkpoints/
+
+# Large generated artifacts
+*.log
+*.png
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

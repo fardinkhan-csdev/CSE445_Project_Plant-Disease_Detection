@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaf Disease Classification | AI Analytics & Diagnostic Suite</title>
+    <!-- Modern Typography & Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+    <!-- Background Glow Accents -->
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+
+    <!-- Navigation Header -->
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand">
+                <div class="brand-icon">🌿</div>
+                <div class="brand-text">
+                    <h1>FloraGuard AI</h1>
+                    <span class="sub-brand">EfficientNet-B0 PEFT Diagnostic & Analytics Suite</span>
+                </div>
+            </div>
+            <nav class="nav-tabs">
+                <button class="nav-btn active" data-tab="tab-diagnosis">
+                    <span class="nav-icon">🔍</span> Live Diagnosis
+                </button>
+                <button class="nav-btn" data-tab="tab-leaderboard">
+                    <span class="nav-icon">🏆</span> Method Leaderboard
+                </button>
+                <button class="nav-btn" data-tab="tab-checkpoints">
+                    <span class="nav-icon">📊</span> Checkpoint Explorer
+                </button>
+                <button class="nav-btn" data-tab="tab-gallery">
+                    <span class="nav-icon">📈</span> Training & Confusion Plots
+                </button>
+                <button class="nav-btn" data-tab="tab-plantdoc">
+                    <span class="nav-icon">🌍</span> Field Test (PlantDoc)
+                </button>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="main-content">
+        <!-- ================= TAB 1: LIVE DIAGNOSIS ================= -->
+        <section id="tab-diagnosis" class="tab-pane active">
+            <div class="pane-header">
+                <h2>Real-Time Plant Leaf Disease Diagnosis Engine</h2>
+                <p>Upload a plant leaf image to run real-time inference using LoRA, QLoRA, or Q/K LoRA fine-tuned EfficientNet-B0 checkpoints.</p>
+            </div>
+
+            <div class="diagnosis-grid">
+                <!-- Upload & Input Panel -->
+                <div class="card glass-card upload-panel">
+                    <div class="card-header">
+                        <h3>1. Input & Model Selection</h3>
+                    </div>
+                    <div class="card-body">
+                        <!-- Model Selection -->
+                        <div class="form-group">
+                            <label for="model-select">Target Model Checkpoint:</label>
+                            <select id="model-select" class="custom-select">
+                                <option value="lora">LoRA (Baseline) - 18 MB | ~343k params</option>
+                                <option value="qlora">CNN-QLoRA (INT8 Q-Path) - 8 MB | ~193k params</option>
+                                <option value="qklora" selected>CNN-QKLoRA (Quantized Q + Kept FP32 K) - 9 MB | ~445k params</option>
+                            </select>
+                        </div>
+
+                        <!-- Dropzone -->
+                        <div id="dropzone" class="dropzone">
+                            <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+                            <div class="dropzone-content">
+                                <div class="upload-icon">📸</div>
+                                <p class="drop-title">Drag & Drop Plant Leaf Image Here</p>
+                                <p class="drop-sub">or click to browse JPG / PNG</p>
+                                <button class="btn btn-outline" onclick="document.getElementById('file-input').click()">Select File</button>
+                            </div>
+                            <img id="image-preview" class="image-preview hidden" alt="Uploaded Leaf Preview">
+                        </div>
+
+                        <!-- Control Buttons -->
+                        <div class="action-bar">
+                            <button id="btn-diagnose" class="btn btn-primary" disabled>
+                                <span>⚡ Run Disease Inference</span>
+                            </button>
+                            <button id="btn-reset" class="btn btn-secondary">Clear Image</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Diagnostic Results Panel -->
+                <div class="card glass-card result-panel">
+                    <div class="card-header">
+                        <h3>2. Diagnostic Results & Insights</h3>
+                        <span id="latency-badge" class="badge badge-tech hidden">0 ms</span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Placeholder State -->
+                        <div id="result-empty" class="empty-state">
+                            <div class="empty-icon">🌱</div>
+                            <p>No leaf image evaluated yet.<br>Select or upload an image on the left to analyze.</p>
+                        </div>
+
+                        <!-- Loading State -->
+                        <div id="result-loading" class="loading-state hidden">
+                            <div class="spinner"></div>
+                            <p>Running EfficientNet-B0 PEFT Inference...</p>
+                        </div>
+
+                        <!-- Active Results View -->
+                        <div id="result-content" class="result-content hidden">
+                            <!-- Status Banner -->
+                            <div id="status-banner" class="status-banner">
+                                <div id="status-icon" class="status-icon">✅</div>
+                                <div class="status-info">
+                                    <div id="status-tag" class="status-tag">Healthy</div>
+                                    <h4 id="full-class-name">Tomato___Healthy</h4>
+                                </div>
+                                <div class="confidence-box">
+                                    <span id="confidence-val" class="confidence-val">99.8%</span>
+                                    <span class="confidence-lbl">Confidence</span>
+                                </div>
+                            </div>
+
+                            <!-- Summary Cards Grid -->
+                            <div class="summary-cards">
+                                <div class="mini-card">
+                                    <span class="mini-lbl">Crop Type</span>
+                                    <strong id="res-crop">Tomato</strong>
+                                </div>
+                                <div class="mini-card">
+                                    <span class="mini-lbl">Diagnosed Condition</span>
+                                    <strong id="res-disease">Healthy</strong>
+                                </div>
+                                <div class="mini-card">
+                                    <span class="mini-lbl">Model Architecture</span>
+                                    <strong id="res-model">CNN-QKLoRA</strong>
+                                </div>
+                            </div>
+
+                            <!-- Top-5 Probability Breakdown -->
+                            <div class="probability-section">
+                                <h4>Top Probability Distribution</h4>
+                                <div id="probability-bars" class="probability-bars">
+                                    <!-- Dynamic bars populated by app.js -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 2: METHOD LEADERBOARD ================= -->
+        <section id="tab-leaderboard" class="tab-pane">
+            <div class="pane-header">
+                <h2>Cross-Method Performance Scorecard (LoRA vs QLoRA vs Q/K LoRA)</h2>
+                <p>Comparative evaluation ranking across accuracy, macro F1, parameter efficiency, and GPU memory utilization.</p>
+            </div>
+
+            <!-- Leaderboard Summary Cards -->
+            <div id="leaderboard-cards" class="leaderboard-cards-grid">
+                <!-- Dynamically populated -->
+            </div>
+
+            <!-- Scorecard Table -->
+            <div class="card glass-card">
+                <div class="card-header">
+                    <h3>🏆 Official Parameter-Efficient Fine-Tuning Leaderboard</h3>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table id="leaderboard-table" class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Method</th>
+                                    <th>Best Checkpoint</th>
+                                    <th>Test Accuracy</th>
+                                    <th>Macro F1</th>
+                                    <th>Binary Acc</th>
+                                    <th>Trainable Params</th>
+                                    <th>Peak GPU Mem</th>
+                                    <th>File Size</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 3: CHECKPOINT EXPLORER ================= -->
+        <section id="tab-checkpoints" class="tab-pane">
+            <div class="pane-header">
+                <h2>Comprehensive Checkpoint Evaluator & Metric Explorer</h2>
+                <p>Detailed performance breakdown of every saved model checkpoint across multiclass, binary, and crop/disease correctness metrics.</p>
+            </div>
+
+            <div class="card glass-card">
+                <div class="card-header">
+                    <h3>All Checkpoints Summary</h3>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table id="checkpoints-table" class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Method</th>
+                                    <th>Checkpoint</th>
+                                    <th>Accuracy</th>
+                                    <th>Macro F1</th>
+                                    <th>Binary Acc</th>
+                                    <th>Binary F1</th>
+                                    <th>ROC AUC</th>
+                                    <th>Both Correct</th>
+                                    <th>Crop Only</th>
+                                    <th>Size (MB)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= TAB 4: VISUAL GALLERY ================= -->
+        <section id="tab-gallery" class="tab-pane">
+            <div class="pane-header flex-header">
+                <div>
+                    <h2>Training Curves, Confusion Matrices & Class Analytics</h2>
+                    <p>Click any image below to open full-screen Interactive Zoom View (scroll wheel to zoom, drag to pan).</p>
+                </div>
+                <div class="plot-filter-box">
+                    <label for="plot-method-select">Filter Method:</label>
+                    <select id="plot-method-select" class="custom-select filter-select">
+                        <option value="lora" selected>LoRA Plots</option>
+                        <option value="qlora">QLoRA Plots</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="plots-vertical-stack">
+                <!-- Plot Row 1 -->
+                <div class="card glass-card plot-full-card">
+                    <div class="plot-card-header">
+                        <h3 id="heading-curves">📈 Training & Validation Curves (LoRA)</h3>
+                        <span class="zoom-hint">🔍 Click Image to Open Fullscreen Zoom</span>
+                    </div>
+                    <div class="plot-card-body">
+                        <img id="img-curves" src="/plots/lora_training_curves.png" alt="LoRA Training Curves" class="plot-img clickable-zoom">
+                    </div>
+                </div>
+
+                <!-- Plot Row 2 -->
+                <div class="card glass-card plot-full-card">
+                    <div class="plot-card-header">
+                        <h3 id="heading-cm">📊 Confusion Matrix Heatmap (LoRA)</h3>
+                        <span class="zoom-hint">🔍 Click Image to Open Fullscreen Zoom</span>
+                    </div>
+                    <div class="plot-card-body">
+                        <img id="img-cm" src="/plots/lora_confusion_matrix.png" alt="LoRA Confusion Matrix" class="plot-img clickable-zoom">
+                    </div>
+                </div>
+
+                <!-- Plot Row 3 -->
+                <div class="card glass-card plot-full-card">
+                    <div class="plot-card-header">
+                        <h3 id="heading-metrics">🎯 Per-Class Precision, Recall & F1 Bar Chart (LoRA)</h3>
+                        <span class="zoom-hint">🔍 Click Image to Open Fullscreen Zoom</span>
+                    </div>
+                    <div class="plot-card-body">
+                        <img id="img-metrics" src="/plots/lora_class_metrics.png" alt="LoRA Class Metrics" class="plot-img clickable-zoom">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 5: Real-World Field Test (PlantDoc) -->
+        <section id="tab-plantdoc" class="tab-pane">
+            <div class="section-header">
+                <h2>🌍 Real-World Field Condition Evaluation (PlantDoc)</h2>
+                <p class="section-desc">Evaluates domain generalization retention when moving models from clean laboratory conditions (PlantVillage) to unconstrained agricultural field environments (PlantDoc).</p>
+            </div>
+
+            <div class="glass-card table-card">
+                <div class="table-header flex-header">
+                    <h3>🏆 Field Condition Benchmark & Domain Retention</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="loadPlantDocResults()">🔄 Refresh Field Metrics</button>
+                </div>
+                <div class="table-responsive">
+                    <table id="plantdoc-table" class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Method</th>
+                                <th>Checkpoint</th>
+                                <th>Lab Accuracy (PlantVillage)</th>
+                                <th>Field Accuracy (PlantDoc)</th>
+                                <th>Domain Retention (%)</th>
+                                <th>Samples Tested</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="6" style="text-align:center;">Run launcher_plantdoc.py option 2 to evaluate models on real-world field images.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ================= FULLSCREEN INTERACTIVE IMAGE ZOOM MODAL ================= -->
+    <div id="image-viewer-modal" class="modal-backdrop hidden">
+        <div class="modal-toolbar">
+            <div class="modal-title" id="modal-image-title">Plot Title</div>
+            <div class="modal-controls">
+                <button class="zoom-btn" id="btn-zoom-in" title="Zoom In (+)">➕</button>
+                <button class="zoom-btn" id="btn-zoom-out" title="Zoom Out (-)">➖</button>
+                <button class="zoom-btn" id="btn-zoom-reset" title="Reset Zoom">🔄 <span id="zoom-level-text">100%</span></button>
+                <button class="zoom-btn close-btn" id="btn-modal-close" title="Close Viewer (Esc)">✖</button>
+            </div>
+        </div>
+        <div class="modal-viewport" id="modal-viewport">
+            <img id="modal-zoom-img" src="" alt="Zoomed Plot View">
+        </div>
+        <div class="modal-footer-hint">
+            <span>Double Click Image to Toggle Zoom &bull; Scroll Wheel to Zoom &bull; Drag to Pan &bull; Esc to Close</span>
+        </div>
+    </div>
+
+    <footer class="app-footer">
+        <p>EfficientNet-B0 Plant Leaf Disease Classification PEFT Project &bull; Powered by PyTorch & PyTorch-PEFT</p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

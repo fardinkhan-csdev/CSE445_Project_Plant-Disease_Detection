@@ -1,0 +1,5 @@
+peft:
+  rank: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules: null
