@@ -35,13 +35,14 @@ def main():
         print("  4. 4th Test — k-NN on frozen backbone (raw PlantDoc, no classifier)")
         print("  5. 5th Test — Multi-Resolution Inference Pyramid (no training)")
         print("  6. 6th Test — Image Quality Gating (exclude blurry/underexposed/occluded images)")
-        print("  7. Run ALL SIX tests (1 + 2 + 3 + 4 + 5 + 6)")
+        print("  7. 7th Test — Style + CORAL (runs StyleNorm, CORAL, and Both sequentially)")
+        print("  A. Run ALL SEVEN tests (1+2+3+4+5+6+7)")
         print("\nDataset:")
-        print("  8. Download PlantDoc dataset")
-        print("  9. Exit")
-        print("\nTip: Options 1–6 show live tqdm progress bars during evaluation.")
+        print("  B. Download PlantDoc dataset")
+        print("  0. Exit")
+        print("\nTip: Options 1–7 show live tqdm progress bars during evaluation.")
 
-        choice = input("\nEnter choice (1-9): ").strip()
+        choice = input("\nEnter choice (1-9, A, B, 0): ").strip().upper()
 
         base = [sys.executable, "run_plantdoc_evaluation.py"]
 
@@ -58,19 +59,26 @@ def main():
         elif choice == '6':
             run_command(base + ["--quality-gate", "--splits", "test"], label="Running 6th PlantDoc Test (Image Quality Gating, test only)")
         elif choice == '7':
+            run_command(base + ["--style-norm", "--splits", "test"], label="7a: Style Normalization Only")
+            run_command(base + ["--feature-align", "--splits", "test"], label="7b: CORAL Feature Whitening Only")
+            run_command(base + ["--style-norm", "--feature-align", "--splits", "test"], label="7c: Style Normalization + CORAL (Both Together)")
+        elif choice == 'A':
             run_command(base, label="1st Test: Raw Images")
             run_command(base + ["--segmented", "--splits", "test"], label="2nd Test: Segmented")
             run_command(base + ["--ensemble", "--splits", "test"], label="3rd Test: Ensemble from saved CSV")
             run_command(base + ["--knn", "--splits", "test"], label="4th Test: k-NN on frozen backbone")
             run_command(base + ["--multires", "--splits", "test"], label="5th Test: Multi-Resolution Inference Pyramid")
             run_command(base + ["--quality-gate", "--splits", "test"], label="6th Test: Image Quality Gating")
-        elif choice == '8':
+            run_command(base + ["--style-norm", "--splits", "test"], label="7a: Style Normalization Only")
+            run_command(base + ["--feature-align", "--splits", "test"], label="7b: CORAL Feature Whitening Only")
+            run_command(base + ["--style-norm", "--feature-align", "--splits", "test"], label="7c: Style Normalization + CORAL (Both Together)")
+        elif choice == 'B':
             run_command([sys.executable, "download_plantdoc.py"], label="Downloading PlantDoc Dataset")
-        elif choice == '9':
+        elif choice == '0':
             print("\n👋 Goodbye!")
             sys.exit(0)
         else:
-            print("\n❌ Invalid choice. Please enter a number between 1 and 9.")
+            print("\n❌ Invalid choice. Please enter 1-7, A, B, or 0.")
 
         input("\nPress Enter to return to menu...")
 

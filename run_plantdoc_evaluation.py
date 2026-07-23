@@ -63,6 +63,50 @@ def compute_image_quality_score(pil_img: Image.Image) -> float:
     dxx = gray[:, 2:] - 2.0 * gray[:, 1:-1] + gray[:, :-2]
     dyy = gray[2:, :] - 2.0 * gray[1:-1, :] + gray[:-2, :]
     lap_var = float(np.var(np.concatenate([dxx.ravel(), dyy.ravel()])))
+
+    sharpness = min(lap_var / 500.0, 1.0)
+    sharpness = max(sharpness - 0.3, 0.0)
+
+    brightness = gray.mean() / 255.0
+    bright_score = 1.0 - abs(brightness - 0.5) / 0.5
+    bright_score = max(bright_score, 0.0) ** 2
+
+    hist, _ = np.histogram(gray, bins=64, range=(0, 255), density=True)
+    hist = hist.astype(np.float64)
+    hist = hist / hist.sum()
+    hist = np.maximum(hist, 1e-10)
+    entropy = -np.sum(hist * np.log2(hist))
+    max_entropy = np.log2(64.0)
+    entropy_score = min(entropy / max_entropy, 1.0) if max_entropy > 0 else 0.0
+    entropy_score = max(entropy_score - 0.2, 0.0)
+
+    quality = sharpness * 0.5 + bright_score * 0.25 + entropy_score * 0.25
+    return float(np.clip(quality, 0.0, 1.0))
+
+
+class _QualityFilteredDataset(Dataset):
+    def __init__(self, base_dataset: Dataset, keep_indices: List[int]):
+        self.base_dataset = base_dataset
+        self.keep_indices = keep_indices
+
+    def __len__(self):
+        return len(self.keep_indices)
+
+    def __getitem__(self, idx):
+        return self.base_dataset[self.keep_indices[idx]]
+
+
+def compute_image_quality_score(pil_img: Image.Image) -> float:
+    gray = np.array(pil_img.convert("L"), dtype=np.float32)
+    if gray.size < 4:
+        return 0.0
+    h, w = gray.shape
+    if h < 2 or w < 2:
+        return 0.0
+
+    dxx = gray[:, 2:] - 2.0 * gray[:, 1:-1] + gray[:, :-2]
+    dyy = gray[2:, :] - 2.0 * gray[1:-1, :] + gray[:-2, :]
+    lap_var = float(np.var(np.concatenate([dxx.ravel(), dyy.ravel()])))
     sharpness = min(lap_var / 100.0, 1.0)
 
     brightness = gray.mean() / 255.0
@@ -191,6 +235,246 @@ def extract_backbone_features(model, loader, device, desc="Extracting features")
         'labels': np.array(all_labels),
         'paths': list(all_paths),
     }
+
+
+def extract_backbone_features(model, loader, device, desc="Extracting features"):
+    model.eval()
+    all_features = []
+    all_labels = []
+    all_paths = []
+
+    pbar = tqdm(loader, desc=desc, leave=False)
+    with torch.no_grad():
+        for batch in pbar:
+            images = batch[0]
+            labels = batch[1]
+            paths = batch[4]
+            images = images.to(device)
+
+            x = model.features(images)
+            x = model.avgpool(x)
+            x = torch.flatten(x, 1)
+
+            all_features.append(x.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_paths.extend(paths)
+
+    return {
+        'features': np.concatenate(all_features, axis=0),
+        'labels': np.array(all_labels),
+        'paths': list(all_paths),
+    }
+
+
+class StyleNormalize:
+    def __init__(self, ref_mean: np.ndarray, ref_std: np.ndarray):
+        self.ref_mean = ref_mean
+        self.ref_std = ref_std
+
+    def __call__(self, img: 'Image.Image') -> 'Image.Image':
+        arr = np.array(img).astype(np.float32) / 255.0
+        mean = arr.mean(axis=(0, 1))
+        std = arr.std(axis=(0, 1))
+        std = np.maximum(std, 1e-6)
+        matched = ((arr - mean) / std) * self.ref_std + self.ref_mean
+        matched = np.clip(matched, 0.0, 1.0)
+        return Image.fromarray((matched * 255).astype(np.uint8))
+
+
+def _compute_pv_raw_stats(sample_limit=2000):
+    with open('config/base_config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+    data_config = config['data']
+    raw_dir = data_config['raw_dir']
+    dataset_name = data_config.get('dataset_name', 'mohanty/PlantVillage')
+    val_split_from_train = data_config.get('val_split_from_train', 0.15)
+    split_seed = data_config.get('split_seed', 42)
+
+    dataset_root = os.path.join(raw_dir, "plantvillage_hf")
+    get_cached_color_image_root(raw_dir)
+    metadata_paths = get_cached_hf_metadata_paths(dataset_name)
+    leaf_map = load_leaf_map(metadata_paths["leaf_map"])
+
+    official_train_samples = build_official_split_samples(
+        metadata_paths["train_split"], dataset_root, leaf_map
+    )
+    train_samples, _ = split_train_samples_by_leaf_id(
+        official_train_samples, val_split_from_train, split_seed
+    )
+
+    means = []
+    stds = []
+    for img_path, _, _ in tqdm(train_samples[:sample_limit], desc="Computing PV train stats", leave=False):
+        try:
+            img = Image.open(img_path).convert('RGB')
+            arr = np.array(img).astype(np.float32) / 255.0
+            means.append(arr.mean(axis=(0, 1)))
+            stds.append(arr.std(axis=(0, 1)))
+        except Exception:
+            continue
+
+    mean = np.mean(means, axis=0)
+    std = np.mean(stds, axis=0)
+    print(f"PV train RGB stats: mean={mean.round(4)}, std={std.round(4)}")
+    return mean, std
+
+
+def _compute_coral_transform(pv_features: np.ndarray, pd_features: np.ndarray):
+    mu_s = pv_features.mean(axis=0)
+    mu_t = pd_features.mean(axis=0)
+
+    cov_s = np.cov(pv_features.T) + np.eye(pv_features.shape[1]) * 1e-5
+    cov_t = np.cov(pd_features.T) + np.eye(pd_features.shape[1]) * 1e-5
+
+    U_s, S_s, _ = np.linalg.svd(cov_s)
+    U_t, S_t, _ = np.linalg.svd(cov_t)
+
+    sqrt_Cs = U_s @ np.diag(np.sqrt(S_s))
+    inv_sqrt_Ct = U_t @ np.diag(1.0 / np.sqrt(S_t))
+
+    return {
+        'mu_s': mu_s,
+        'mu_t': mu_t,
+        'sqrt_Cs': sqrt_Cs,
+        'inv_sqrt_Ct': inv_sqrt_Ct,
+    }
+
+
+def _apply_coral(x: np.ndarray, transform: dict) -> np.ndarray:
+    x_white = (x - transform['mu_t']) @ transform['inv_sqrt_Ct']
+    x_aligned = x_white @ transform['sqrt_Cs'] + transform['mu_s']
+    return x_aligned
+
+
+def _run_coral_evaluation(root_dir, segmented, split_keys, style_norm=False):
+    root_dir = root_dir or os.path.join(PROJECT_ROOT, "data", "raw", "plantdoc_roboflow_cocojson")
+    if not os.path.isdir(root_dir):
+        raise FileNotFoundError(f"PlantDoc dataset root not found: {root_dir}")
+
+    class_to_idx, idx_to_class = load_class_labels()
+    available_splits = get_available_plantdoc_splits(root_dir)
+    if split_keys:
+        available_splits = [s for s in available_splits if s in split_keys]
+    if not available_splits:
+        raise RuntimeError(f"No PlantDoc split folders found under {root_dir}")
+
+    label_parts = []
+    if style_norm:
+        label_parts.append("StyleNorm")
+    label_parts.append("CORAL")
+    label = "+".join(label_parts)
+    print(f"Using PlantDoc dataset root: {root_dir}")
+    print(f"Available splits: {', '.join(available_splits)}")
+    print(f"Segmentation: {segmented}")
+    print(f"Domain Adaptation: {label}")
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    models = load_best_checkpoints()
+    if not models:
+        raise RuntimeError("No checkpoints found")
+
+    pv_mean, pv_std = None, None
+    if style_norm:
+        pv_mean, pv_std = _compute_pv_raw_stats()
+
+    if style_norm and pv_mean is not None:
+        eval_transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            StyleNormalize(pv_mean, pv_std),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        eval_transform = get_val_test_transform()
+
+    pv_loader_full, _ = get_plantvillage_train_loader_for_knn(batch_size=32, num_workers=0)
+    pv_loader = DataLoader(_SubsetLoader(pv_loader_full.dataset, limit=300), batch_size=32, shuffle=False, num_workers=0)
+    results: List[Dict] = []
+
+    for split_name in available_splits:
+        print(f"\nEvaluating split: {split_name}")
+
+        base_dataset = None
+        if segmented:
+            base_dataset = PlantDocCOCODataset(
+                root_dir, split_name, class_to_idx,
+                transform=None, apply_segmentation=True
+            )
+            if len(base_dataset) == 0:
+                continue
+
+            print(f"Segmenting {len(base_dataset)} images...")
+            for i in tqdm(range(len(base_dataset)), desc="Segmenting", leave=False):
+                base_dataset[i]
+
+        dataset = PlantDocCOCODataset(
+            root_dir, split_name, class_to_idx,
+            transform=eval_transform, apply_segmentation=segmented
+        )
+        loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
+
+        for exp_key, model in models.items():
+            print(f"Evaluating {exp_key.upper()} on {split_name} ({label})...")
+
+            pv_rec = extract_backbone_features(model, pv_loader, device, desc=f"  PV features ({exp_key})")
+            pd_rec = extract_backbone_features(model, loader, device, desc=f"  PD features ({exp_key})")
+
+            coral_t = _compute_coral_transform(pv_rec['features'], pd_rec['features'])
+            pd_aligned = _apply_coral(pd_rec['features'], coral_t)
+
+            x = torch.tensor(pd_aligned, device=device, dtype=torch.float32)
+            with torch.no_grad():
+                outputs = model.classifier(x)
+                probs = torch.softmax(outputs, dim=1).cpu().numpy()
+                preds = outputs.argmax(dim=1).cpu().numpy()
+
+            metrics = calculate_metrics(pd_rec['labels'], preds, idx_to_class, probs)
+            print(f"  {exp_key.upper()} {label} accuracy: {metrics['accuracy'] * 100:.2f}%")
+
+            results.append(build_metric_row(
+                method=exp_key.upper(),
+                split=split_name,
+                metrics=metrics,
+                sample_count=len(dataset),
+                checkpoint=f"{exp_key}_best.pth ({label.lower()})",
+            ))
+
+    os.makedirs(EVAL_DIR, exist_ok=True)
+    if segmented and style_norm:
+        out_name = "plantdoc_coral_stylenorm_segmented_results.csv"
+    elif segmented:
+        out_name = "plantdoc_coral_segmented_results.csv"
+    elif style_norm and feature_align:
+        out_name = "plantdoc_stylenorm_coral_results.csv"
+    elif style_norm:
+        out_name = "plantdoc_stylenorm_results.csv"
+    elif feature_align:
+        out_name = "plantdoc_coral_results.csv"
+    else:
+        out_name = "plantdoc_dual_split_results.csv"
+
+    out_path = os.path.join(EVAL_DIR, out_name)
+    fieldnames = ['method', 'split'] + METRIC_FIELDS + ['sample_count', 'checkpoint']
+    with open(out_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nSaved CORAL evaluation results to {out_path}")
+    return out_path
+
+
+class _SubsetLoader(Dataset):
+    def __init__(self, dataset, limit=300):
+        self.dataset = dataset
+        self.limit = min(limit, len(dataset))
+
+    def __len__(self):
+        return self.limit
+
+    def __getitem__(self, idx):
+        return self.dataset[idx]
 
 
 def _run_knn_evaluation(root_dir, segmented, split_keys, k):
@@ -385,7 +669,7 @@ def _run_multires_evaluation(root_dir, segmented, split_keys, scales):
     return out_path
 
 
-def _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=0.3):
+def _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=0.6):
     root_dir = root_dir or os.path.join(PROJECT_ROOT, "data", "raw", "plantdoc_roboflow_cocojson")
     if not os.path.isdir(root_dir):
         raise FileNotFoundError(f"PlantDoc dataset root not found: {root_dir}")
@@ -401,6 +685,15 @@ def _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=0.3)
     print(f"Available splits: {', '.join(available_splits)}")
     print(f"Segmentation: {segmented}")
     print(f"Quality gate threshold: {threshold}")
+
+    dual_csv = os.path.join(EVAL_DIR, "plantdoc_dual_split_results.csv")
+    baseline_metrics = {}
+    if os.path.exists(dual_csv):
+        with open(dual_csv, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = (row['method'].upper(), row['split'])
+                baseline_metrics[key] = row
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     models = load_best_checkpoints()
@@ -439,39 +732,50 @@ def _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=0.3)
         n_filtered = n_total - n_kept
         print(f"Quality gate: filtered {n_filtered}/{n_total} images (kept {n_kept})")
 
+        keep_indices = [i for i, keep in enumerate(keep_mask) if keep]
+
+        for method in ['LORA', 'QLORA', 'QKLORA']:
+            key = (method, split_name)
+            if key in baseline_metrics:
+                row = baseline_metrics[key]
+                results.append({
+                    'method': method,
+                    'split': split_name,
+                    'accuracy': float(row['accuracy']) / 100.0,
+                    'f1_macro': float(row['f1_macro']) / 100.0,
+                    'binary_accuracy': float(row['binary_accuracy']) / 100.0,
+                    'binary_f1': float(row['binary_f1']) / 100.0,
+                    'binary_roc_auc': float(row['binary_roc_auc']),
+                    'both_correct_pct': float(row['both_correct_pct']),
+                    'name_only_correct_pct': float(row['name_only_correct_pct']),
+                    'disease_only_correct_pct': float(row['disease_only_correct_pct']),
+                    'none_correct_pct': float(row['none_correct_pct']),
+                    'sample_count': int(row['sample_count']),
+                    'checkpoint': f"{method.lower()}_best.pth (ALL)"
+                })
+
+        if n_kept == 0:
+            continue
+
         transform = get_val_test_transform()
-        eval_dataset = SegmentedResDataset(base_dataset, transform=transform) if segmented else PlantDocCOCODataset(
-            root_dir, split_name, class_to_idx,
-            transform=transform, apply_segmentation=False
-        )
-        loader = DataLoader(eval_dataset, batch_size=32, shuffle=False, num_workers=2)
+        base_tform = base_dataset.transform
+        base_dataset.transform = transform
+        passed_dataset = _QualityFilteredDataset(base_dataset, keep_indices)
+
+        loader = DataLoader(passed_dataset, batch_size=32, shuffle=False, num_workers=2)
 
         for exp_key, model in models.items():
-            print(f"Evaluating {exp_key.upper()} on {split_name}...")
+            print(f"Evaluating {exp_key.upper()} on quality-passed {split_name}...")
             rec = evaluate_single_and_collect(model, loader, device, desc=f"  {exp_key} quality-gate")
-            labels = rec['labels']
-            preds = rec['preds']
-            probs = rec['probs']
-
-            metrics_all = calculate_metrics(labels, preds, idx_to_class, probs)
-            print(f"  All images:          {metrics_all['accuracy']*100:.2f}%")
-
-            if n_kept > 0:
-                metrics_kept = calculate_metrics(labels[keep_mask], preds[keep_mask], idx_to_class, probs[keep_mask])
-                print(f"  Quality-passed ({threshold}): {metrics_kept['accuracy']*100:.2f}%")
-            else:
-                metrics_kept = {k: 0.0 for k in METRIC_FIELDS}
-                print(f"  Quality-passed ({threshold}): SKIPPED (0 images)")
+            metrics_passed = calculate_metrics(rec['labels'], rec['preds'], idx_to_class, rec['probs'])
+            print(f"  Quality-passed ({threshold}): {metrics_passed['accuracy']*100:.2f}%")
 
             results.append(build_metric_row(
-                method=exp_key.upper(), split=split_name, metrics=metrics_all,
-                sample_count=n_total, checkpoint=f"{exp_key}_best.pth (ALL)"
+                method=exp_key.upper(), split=split_name, metrics=metrics_passed,
+                sample_count=n_kept, checkpoint=f"{exp_key}_best.pth (quality>={threshold})"
             ))
-            if n_kept > 0:
-                results.append(build_metric_row(
-                    method=exp_key.upper(), split=split_name, metrics=metrics_kept,
-                    sample_count=n_kept, checkpoint=f"{exp_key}_best.pth (quality>={threshold})"
-                ))
+
+        base_dataset.transform = base_tform
 
     os.makedirs(EVAL_DIR, exist_ok=True)
     out_name = "plantdoc_quality_gate_segmented_results.csv" if segmented else "plantdoc_quality_gate_results.csv"
@@ -579,6 +883,8 @@ def run_plantdoc_evaluation(
     multires_scales: Optional[List[int]] = None,
     quality_gate: bool = False,
     quality_threshold: float = 0.3,
+    style_norm: bool = False,
+    feature_align: bool = False,
 ):
     print("=" * 70)
     labels = []
@@ -592,9 +898,16 @@ def run_plantdoc_evaluation(
         labels.append(f"Multi-Res-{'-'.join(str(s) for s in (multires_scales or MULTIRES_DEFAULT_SCALES))}")
     if quality_gate:
         labels.append(f"Quality-Gate-{quality_threshold}")
+    if style_norm:
+        labels.append("StyleNorm")
+    if feature_align:
+        labels.append("CORAL")
     label = " ".join(labels) if labels else "Standard"
     print(f"PlantDoc {label} Evaluation")
     print("=" * 70)
+
+    if feature_align:
+        return _run_coral_evaluation(root_dir, segmented, split_keys, style_norm=style_norm)
 
     if quality_gate:
         return _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=quality_threshold)
@@ -614,7 +927,18 @@ def run_plantdoc_evaluation(
     if multires:
         return _run_multires_evaluation(root_dir, segmented, split_keys, multires_scales)
 
-    transform = get_val_test_transform()
+    if style_norm:
+        pv_mean, pv_std = _compute_pv_raw_stats()
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            StyleNormalize(pv_mean, pv_std),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        transform = get_val_test_transform()
+
     available_splits = get_available_plantdoc_splits(root_dir)
     if split_keys:
         available_splits = [s for s in available_splits if s in split_keys]
@@ -625,6 +949,7 @@ def run_plantdoc_evaluation(
     print(f"Available splits: {', '.join(available_splits)}")
     print(f"Segmentation: {segmented}")
     print(f"Ensemble: {ensemble}")
+    print(f"Style Normalization: {style_norm}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     results: List[Dict] = []
@@ -717,7 +1042,9 @@ def run_plantdoc_evaluation(
                 ))
 
     os.makedirs(EVAL_DIR, exist_ok=True)
-    if knn:
+    if style_norm:
+        out_name = "plantdoc_stylenorm_segmented_results.csv" if segmented else "plantdoc_stylenorm_results.csv"
+    elif knn:
         out_name = "plantdoc_knn_segmented_results.csv" if segmented else "plantdoc_knn_results.csv"
     elif multires:
         out_name = "plantdoc_multires_segmented_results.csv" if segmented else "plantdoc_multires_results.csv"
@@ -750,7 +1077,9 @@ if __name__ == '__main__':
     parser.add_argument('--multires', action='store_true', help='Run multi-resolution inference pyramid (no training)')
     parser.add_argument('--scales', type=int, nargs='*', default=None, help='Resolution scales for multi-res (default: 192 224 256 320)')
     parser.add_argument('--quality-gate', action='store_true', help='Exclude low-quality PlantDoc images from metrics')
-    parser.add_argument('--quality-threshold', type=float, default=0.3, help='Minimum quality score to keep (0..1, default: 0.3)')
+    parser.add_argument('--quality-threshold', type=float, default=0.6, help='Minimum quality score to keep (0..1, default: 0.6)')
+    parser.add_argument('--style-norm', action='store_true', help='Apply test-time style normalization (match PlantDoc to PlantVillage color stats)')
+    parser.add_argument('--feature-align', action='store_true', help='Apply CORAL feature whitening at test time (align PlantDoc features to PlantVillage)')
     args = parser.parse_args()
 
     run_plantdoc_evaluation(
@@ -764,4 +1093,6 @@ if __name__ == '__main__':
         multires_scales=args.scales,
         quality_gate=args.quality_gate,
         quality_threshold=args.quality_threshold,
+        style_norm=args.style_norm,
+        feature_align=args.feature_align,
     )

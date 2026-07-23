@@ -1,48 +1,10 @@
-# Improvement Ideas
+# Improvement Ideas (SUPERSEDED — see IMPROVEMENT_IDEAS_NEW.md)
 
-> **Note on PlantDoc evaluation metrics:** All PlantDoc testing accuracy reporting should include a correctness breakdown: **both** (crop AND disease correct), **crop only** (crop correct, disease wrong), **disease only** (crop wrong, disease correct), and **none** (both wrong). This mirrors the existing `both_correct_pct`, `name_only_correct_pct`, `disease_only_correct_pct`, and `none_correct_pct` columns already computed in `eval/*_checkpoint_ranking.csv` and should be surfaced prominently in the UI and any PlantDoc result tables.
+> **Note on PlantDoc evaluation metrics:** All PlantDoc testing accuracy reporting should include a correctness breakdown: **both** (crop AND disease correct), **crop only** (crop correct, disease wrong), **disease only** (crop wrong, crop correct), and **none** (both wrong). This mirrors the existing `both_correct_pct`, `name_only_correct_pct`, `disease_only_correct_pct`, and `none_correct_pct` columns already computed in `eval/*_checkpoint_ranking.csv` and should be surfaced prominently in the UI and any PlantDoc result tables.
 
 ## 1. [Empty — reserved for future idea]
 
-## 2. Test-Time Augmentation (TTA) for PlantDoc Evaluation
-
-### Problem
-The PlantDoc test set is small (~218 images), and each misclassification has a large impact on reported accuracy. The current evaluator processes each image exactly once with its original preprocessing, leaving no room for prediction diversity or error correction.
-
-### Idea
-Implement test-time augmentation (TTA) in `evaluation/evaluator.py`. For each test image, generate 5 augmented views (original, horizontal flip, center crop, brightness shift, slight rotation), run the model on all 5, and average the output probabilities before selecting the final prediction.
-
-### Implementation
-Modify `Evaluator.evaluate()` to apply on-the-fly augmentations to each batch during the inference loop:
-
-```python
-tta_views = [
-    images,
-    torch.flip(images, dims=[3]),
-    images[:, :, 10:-10, 10:-10],
-    images * 0.9 + 0.1,
-    torch.rot90(images, k=1, dims=[2, 3])
-]
-# Pad/crop to same size as needed, then average outputs:
-outputs = sum(self.model(x) for x in tta_views) / len(tta_views)
-```
-
-### Expected Gain
-+3–8% accuracy on PlantDoc with zero additional training. The model is unchanged; only inference strategy changes.
-
-### Why This Is Not Cheating
-- No test labels are used
-- No model weights are modified
-- The same checkpoint file is evaluated 5 times under standard, widely-used augmentations
-- TTA is explicitly allowed in major benchmarks (ImageNet, Kaggle) and common in research papers
-
-### Files to Modify
-- `evaluation/evaluator.py` — add TTA logic in the inference loop
-- `evaluation/metrics.py` — optional: add TTA toggle flag to `calculate_metrics()`
-- `web_app/server.py` — expose TTA flag via config if needed for the web UI
-
-### Priority
-- **Worth doing.** Small code change (~15 lines), no training required, defensible in thesis, and directly improves the PlantDoc numbers that currently look weak.
+## 2. [Retired — moved to IMPROVEMENT_IDEAS_NEW.md #4]
 
 ## 3. Confidence Calibration + Rejection
 
