@@ -1,0 +1,10 @@
+peft:
+  method: "qalora"
+  rank: 8
+  alpha: 16
+  dropout: 0.1
+  target_modules: null
+  quantization:
+    bits: 8
+    quant_type: "fake_quant"
+    learnable_zp: true

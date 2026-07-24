@@ -1,0 +1,36 @@
+data:
+  raw_dir: "data/raw"
+  dataset_name: "mohanty/PlantVillage"
+  dataset_config: "color"
+  image_size: 224
+  batch_size: 32
+  num_workers: 4
+  val_split_from_train: 0.15
+  split_seed: 42
+  use_class_weights: false
+  use_weighted_sampler: false
+
+training:
+  epochs: 20
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  loss_fn: "CrossEntropyLoss"
+  early_stopping_patience: 7
+
+logging:
+  log_dir: "experiments/results/logs_v3"
+  checkpoint_dir: "experiments/results/checkpoints_v3"
+  plot_dir: "experiments/results/plots_v3"
+  save_epoch_checkpoints: false
+
+speed:
+  cudnn_benchmark: true
+  mixed_precision: true
+  compile: false
+  num_workers: 8
+  prefetch_factor: 4
+  persistent_workers: true
+
+version: 3
