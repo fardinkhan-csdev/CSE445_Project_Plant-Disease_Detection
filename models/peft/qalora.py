@@ -1,8 +1,10 @@
 """QA-LoRA for EfficientNet-B0 — faithful to Xu et al., ICLR 2024.
 
-Real QA-LoRA (not fake):
-  - Group-wise fake-quantization: each output channel's weights split into L groups,
+Real QA-LoRA:
+  - Group-wise true integer quantization: each output channel's weights split into L groups,
     each group has its own learnable scale and zero-point (increases quantization DOF).
+    Weights are stored as actual INT8 integers (not FP32 fake-quantized), matching the paper's
+    protocol of loading a true quantized base before fine-tuning.
   - Grouped LoRA A: LoRA A shape reduced from (D_in, r) to (L, r) by averaging the
     input features into L groups via adaptive avg-pool (decreases adaptation DOF).
   - Balance goal: increase quantization params and decrease adaptation params, so after
@@ -13,9 +15,9 @@ Reference Algorithm 1 from paper (adapted for Conv2d):
   lora_A = (L, r)       -- grouped, smaller than standard (D_in, r)
   lora_B = (C_out, r)   -- standard
   forward:
-    W_tilde = group_wise_fake_quant(W, scale, zp)
-    result = conv2d(x, W_tilde)
-    result += (QA(x_unfold) * group_size) @ lora_A.T @ lora_B.T * scaling
+    W = dequantize(weight_q, scale, zp)  -- true integer base, not fake-quant
+    result = conv2d(x, W)
+    result += (QA(x_unfold) * (D_in//L)) @ lora_A.T @ lora_B.T * scaling
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from models.peft.int8_utils import get_mbconv_q_path_names
 
 
 class QALoRAConv2d(nn.Module):
-    """QA-LoRA for a single Conv2d layer — group-wise quant + grouped LoRA."""
+    """QA-LoRA for a single Conv2d layer — group-wise true integer quant + grouped LoRA."""
 
     def __init__(
         self,
@@ -57,24 +59,26 @@ class QALoRAConv2d(nn.Module):
         self.dilation = conv.dilation
         self.groups = conv.groups
 
-        # Frozen original weights
+        with torch.no_grad():
+            W_flat = conv.weight.detach().view(C_out, -1)
+            W_grouped = W_flat.view(C_out, num_groups, self.group_size)
+            per_group_max = W_grouped.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+            init_scale = (per_group_max / 127.0).squeeze(-1)
+
+            scale_view = init_scale.view(-1, num_groups, 1)
+            zp_view = torch.zeros(C_out, num_groups, device=conv.weight.device).view(-1, num_groups, 1)
+            W_quant = torch.round(W_grouped / scale_view + zp_view).clamp(-128, 127).to(torch.int8)
+
+        self.register_buffer("weight_q", W_quant)
         self.register_buffer("weight_orig", conv.weight.detach().clone().contiguous())
         if conv.bias is not None:
             self.register_buffer("bias", conv.bias.detach().clone().contiguous())
         else:
             self.register_buffer("bias", None)
 
-        # --- Group-wise quantization params (C_out x L) ---
-        with torch.no_grad():
-            W_flat = self.weight_orig.view(C_out, -1)
-            W_grouped = W_flat.view(C_out, num_groups, self.group_size)
-            per_group_max = W_grouped.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
-            init_scale = (per_group_max / 127.0).squeeze(-1)
-
-        self.scale = nn.Parameter(init_scale)                      # (C_out, L)
+        self.scale = nn.Parameter(init_scale)
         self.zero_point = nn.Parameter(torch.zeros(C_out, num_groups))
 
-        # --- Grouped LoRA A: (L, r) instead of standard (D_in, r) ---
         self.lora_A = nn.Parameter(torch.zeros(num_groups, rank))
         self.lora_B = nn.Parameter(torch.zeros(C_out, rank))
 
@@ -87,27 +91,16 @@ class QALoRAConv2d(nn.Module):
         B, C_in, H, W = x.shape
         _, _, k_h, k_w = self.weight_orig.shape
 
-        # ================================================================
-        # 1. Group-wise fake-quantization of the frozen backbone weights
-        # ================================================================
-        W_flat = self.weight_orig.view(self.weight_orig.shape[0], self.D_in)
-        W_grouped = W_flat.view(self.weight_orig.shape[0], self.num_groups, self.group_size)
-
+        W_q = self.weight_q.float()
         scale_view = self.scale.view(-1, self.num_groups, 1)
         zp_view = self.zero_point.view(-1, self.num_groups, 1)
-
-        W_quant = W_grouped / scale_view + zp_view
-        W_quant = W_quant.round().clamp(0, 255)
-        W_quant = (W_quant - zp_view) * scale_view
-        W_quant = W_quant.view_as(self.weight_orig)
+        W_dequant = (W_q - zp_view) * scale_view
+        W_dequant = W_dequant.view_as(self.weight_orig)
 
         out = F.conv2d(
-            x, W_quant, self.bias, self.stride, self.padding, self.dilation, self.groups
+            x, W_dequant, self.bias, self.stride, self.padding, self.dilation, self.groups
         )
 
-        # ================================================================
-        # 2. Grouped LoRA (paper Algorithm 1, adapted for Conv2d)
-        # ================================================================
         x_unfold = F.unfold(
             x,
             kernel_size=(k_h, k_w),
@@ -116,18 +109,13 @@ class QALoRAConv2d(nn.Module):
             dilation=self.dilation,
         )
 
-        # Adaptive avg-pool over feature dim to reduce D_in -> num_groups (the paper's "QA")
-        # x_unfold: (B, D_in, N_positions); adaptive_avg_pool1d pools over LAST dim,
-        # so transpose -> pool -> transpose back to pool over D_in.
         x_grouped = F.adaptive_avg_pool1d(x_unfold.transpose(1, 2), self.num_groups)
         x_grouped = x_grouped.transpose(1, 2) * self.group_size
         x_grouped = self.dropout(x_grouped)
 
-        # lora_A: (L, r), lora_B: (C_out, r)
-        # x_grouped: (B, L, N_positions)
-        lora_mid = torch.matmul(x_grouped.transpose(1, 2), self.lora_A)   # (B, N, r)
-        lora_out = torch.matmul(lora_mid, self.lora_B.t()) * self.scaling # (B, N, C_out)
-        lora_out = lora_out.transpose(1, 2)                                # (B, C_out, N)
+        lora_mid = torch.matmul(x_grouped.transpose(1, 2), self.lora_A)
+        lora_out = torch.matmul(lora_mid, self.lora_B.t()) * self.scaling
+        lora_out = lora_out.transpose(1, 2)
 
         l_out_h = (H + 2 * self.padding[0] - k_h) // self.stride[0] + 1
         l_out_w = (H + 2 * self.padding[1] - k_w) // self.stride[1] + 1
