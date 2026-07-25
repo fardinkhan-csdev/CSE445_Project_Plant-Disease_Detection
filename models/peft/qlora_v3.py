@@ -4,6 +4,7 @@ Difference from V1 QLoRA:
   V1: custom INT8 per-channel quantization (weight-only, CNN workaround)
   V3: uses bitsandbytes 4-bit NF4 quantization on Q-path pointwise convs,
       matching Dettmers et al. (2023) more closely.
+  V3 compute dtype: bfloat16, matching the paper's BF16 computation requirement.
 
 Strategy:
   1. Build backbone, locate Q-path pointwise convs
@@ -29,6 +30,8 @@ try:
 except ImportError:
     BNB_AVAILABLE = False
 
+COMPUTE_DTYPE = torch.bfloat16
+
 
 def _quantize_conv_to_nf4(conv: nn.Conv2d) -> None:
     if conv.kernel_size[0] != 1 or conv.kernel_size[1] != 1:
@@ -52,13 +55,21 @@ def _quantize_conv_to_nf4(conv: nn.Conv2d) -> None:
     else:
         conv.register_buffer('_orig_bias', None)
 
-    del conv.weight
-    conv.weight = None
+    if "weight" in conv._parameters:
+        del conv._parameters["weight"]
+
+    _patch_conv_forward(conv)
 
 
 def _dequantize_conv_weight(conv: nn.Conv2d) -> torch.Tensor:
-    w_deq = bnb_f.dequantize_4bit(conv.q_weight, conv.q_state)
-    return w_deq.reshape(conv.out_channels, conv.in_channels, 1, 1)
+    q_weight = conv.q_weight
+    q_state = conv.q_state
+    target_device = q_weight.device
+    if getattr(q_state, 'absmax', None) is not None and q_state.absmax.device != target_device:
+        q_state.absmax = q_state.absmax.to(target_device)
+    w_deq = bnb_f.dequantize_4bit(q_weight, q_state)
+    w_deq = w_deq.reshape(conv.out_channels, conv.in_channels, 1, 1)
+    return w_deq.to(COMPUTE_DTYPE)
 
 
 def _patch_conv_forward(conv: nn.Conv2d) -> None:
@@ -68,6 +79,8 @@ def _patch_conv_forward(conv: nn.Conv2d) -> None:
 
     def nf4_forward(x: torch.Tensor) -> torch.Tensor:
         w_deq = _dequantize_conv_weight(conv)
+        if w_deq.device != x.device:
+            w_deq = w_deq.to(x.device)
         return F.conv2d(x, w_deq, conv.bias, conv.stride, conv.padding, conv.dilation, conv.groups)
 
     conv.forward = nf4_forward

@@ -20,6 +20,7 @@ class QALoRATrainer(BaseTrainer):
             rank=qalora_config['rank'],
             alpha=qalora_config['alpha'],
             dropout=qalora_config['dropout'],
+            num_groups=qalora_config.get('num_groups', 4),
             target_modules=qalora_config.get('target_modules'),
         )
 
