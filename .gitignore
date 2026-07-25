@@ -5,13 +5,22 @@ data/*.zip
 data/*.log
 
 # Experiments
-experiments/results/
 experiments/results/checkpoints/
+experiments/results/plots/
+experiments/results/logs/
+experiments/results/logs_v3/
+experiments/results/eval/
+experiments/results/experiment_results*.csv
+experiments/results/training_status.json
 
 # Large generated artifacts
 *.log
 *.png
 *.pth
+
+# Allow V3 plots push despite global *.png ignore
+!experiments/results/plots_v3/
+!experiments/results/plots_v3/*.png
 
 # Python
 __pycache__/
