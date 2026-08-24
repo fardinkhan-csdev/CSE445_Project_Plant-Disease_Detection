@@ -1,100 +1,136 @@
-# Future Features Reference
+# Future Features — Pending Work Only
 
-Items already implemented in the main pipeline have been removed from this file.
+> Items in this file are **not yet implemented**. For completed features, see the architecture doc and this file's git history.
 
 ---
 
-## 1. Cross-method experiment ranking script
+## 1. Dashboard Improvements
+
+### Known Issues
+- Dashboard has display bugs on certain screen sizes
+- Missing cross-method comparison tab
+- No single-image inference preview integrated
+
+### Planned Work
+- Add a **Method Comparison** tab to `dashboard.html` showing the cross-method ranking side by side
+- Wire single-image inference preview into the dashboard (requires checkpoint loading in-browser or API call)
+- Regenerate after changes: `python generate_dashboard.py`
+
+### Status
+- `rank_experiments.py` produces `cross_method_ranking.csv` ✅
+- `generate_dashboard.py` generates self-contained HTML ✅
+- Dashboard tab and inference preview: **NOT DONE**
+
+---
+
+## 2. Confidence Calibration (Temperature Scaling)
 
 ### Problem
-`launcher_test.py` ranks checkpoints **within one experiment** (e.g. `lora_best` vs `lora_last`). After all three methods finish training, there is no single script that answers: **which method won overall?**
+The model outputs raw softmax probabilities that are poorly calibrated on out-of-distribution PlantDoc images. This leads to confidently wrong predictions on field photos.
 
-### Proposed script: `rank_experiments.py` (name TBD)
+### Proposed Solution
+Apply temperature scaling to calibrate softmax outputs using the PlantVillage validation set. Add a configurable confidence threshold — if max calibrated probability falls below threshold, return "uncertain" or fall back to crop-only prediction.
 
-Run once after LoRA, QLoRA, and Q/K LoRA have all been trained and individually tested:
+### Implementation
+- Fit a single temperature scalar on the validation set
+- `torch.nn.functional.softmax(logits / T, dim=1)`
+- Configurable threshold (e.g., 0.6 or 0.7)
+- Log calibration metrics (ECE, reliability diagram)
 
-```
-python rank_experiments.py
-```
+### Expected Gain
+Reduces confidently wrong predictions on PlantDoc. Does not necessarily raise top-1 accuracy, but improves practical reliability.
 
-### Inputs
-- `experiments/results/experiment_results.csv` — one row per method (train time, params, test accuracy, etc.)
-- `experiments/results/eval/lora_checkpoint_ranking.csv`
-- `experiments/results/eval/qlora_checkpoint_ranking.csv`
-- `experiments/results/eval/qklora_checkpoint_ranking.csv`
+### Files to Modify
+- `evaluation/evaluator.py` — temperature scaling + thresholding
+- `evaluation/metrics.py` — calibration metrics (ECE, MCE)
+- `web_app/server.py` — expose confidence threshold config
 
-### Logic
-1. For each method, pick the **best checkpoint** (rank = 1 from that method's ranking CSV, or `*_best.pth` as fallback).
-2. Compare the three winners on a fixed scorecard:
-   - Primary: `test_accuracy` (multiclass)
-   - Tie-breakers: `f1_macro`, `binary_f1`, `both_correct_pct`, `peak_gpu_memory` (lower is better), `trainable_parameters` (lower is better)
-3. Assign an overall `rank` (1 = best method).
-
-### Outputs
-- `experiments/results/eval/cross_method_ranking.csv` — one row per method, best checkpoint only
-- Optional: append a "Method Comparison" section/tab to `dashboard.html` via `generate_dashboard.py`
-
-### Opinion
-- **Worth doing.** This is the natural capstone after the three training runs and keeps evaluation separate from training (GPU-friendly).
-- Should be a **small, read-only script** — no model loading, just CSV aggregation. Fast and safe to run anytime.
-- Do **not** fold this into `launcher_test.py`; keep per-method testing and cross-method comparison as two distinct steps.
-- Re-run `launcher_test.py` (evaluate-all mode) for each method first so per-method ranking CSVs exist; then run the cross-method script.
+### Priority
+**Worth doing.** ~30 lines, no retraining, adds a professional reliability layer.
 
 ---
 
-## 2. GUI prototype: image upload and prediction summary
+## 3. Crop-First Prediction Cascade
 
-### Purpose
-- Allow real-world test images from Google or other sources
-- Show the model's predicted crop name and disease label
-- Provide a simple interface for reference testing
+### Problem
+The 38-class problem space is very large for low-quality PlantDoc images. Predicting crop and disease simultaneously is harder than sequential prediction.
 
-### Features
-- Upload a JPEG/PNG image
-- Preprocess the image to the model's input format
-- Run the selected checkpoint or model
-- Display results:
-  - predicted full class (`Crop___Disease`)
-  - predicted crop name
-  - predicted disease label
-  - binary diseased/healthy output
-  - optionally confidence scores
+### Proposed Solution
+At inference time:
+1. Predict crop only by summing class probabilities across all diseases for each crop
+2. Select the winning crop
+3. Restrict disease prediction to diseases known to affect that crop
 
-### UI components
-- File upload button
-- Preview of the uploaded image
-- Prediction result panel:
-  - `Predicted label:`
-  - `Crop:`
-  - `Disease:`
-  - `Healthy/diseased:`
-  - `Confidence:`
+Additionally, surface the **both / crop-only / disease-only / none** correctness breakdown as a first-class metric in the web UI and PlantDoc tables.
 
-### Implementation options
-- Lightweight web app using Flask or FastAPI (or simple HTML)
-- Local desktop app using a simple GUI toolkit (e.g., Tkinter)
-- Save test results to a log or CSV for manual review
+### Expected Gain
++2–5% accuracy on PlantDoc by reducing the effective class space.
 
-### Opinion
-- Useful for demos and thesis defense.
-- `config/class_labels.json` is now auto-exported; wire checkpoints from `experiments/results/checkpoints/<method>_best.pth`.
-- Should use the winning checkpoint from `cross_method_ranking.csv` once that exists (see §1 above).
+### Files to Modify
+- `evaluation/evaluator.py` — crop-first cascade option
+- `evaluation/metrics.py` — crop/disease breakdown for PlantDoc
+- `web_app/static/app.js` — correctness badges in PlantDoc table
+- `web_app/static/index.html` — correctness columns
+
+### Priority
+**Worth doing.** Zero retraining, improves both accuracy and analysis depth.
 
 ---
 
-## 3. Dashboard fixes
+## 4. Test-Time Augmentation (TTA) for PlantDoc
 
-### Known issues (from architecture doc)
-- Dashboard has bugs and is missing image-test integration
-- Regenerate after all three experiments: `python generate_dashboard.py`
+### Problem
+PlantDoc images have high within-class variance (different framing, zoom, lighting). A single forward pass may miss the correct prediction.
 
-### Future work
-- Add cross-method comparison tab (depends on §1 above)
-- Wire in single-image inference preview (depends on §2 above)
+### Proposed Solution
+For each test image, generate 5 augmented views:
+1. Original (center crop)
+2. Horizontal flip
+3. Slightly different center crop
+4. Brightness shift
+5. 90° rotation
+
+Average the softmax probabilities across all 5 views and select the final class.
+
+### Expected Gain
++3–8% PlantDoc test accuracy (zero retraining). This is the single lowest-effort / highest-impact improvement for domain-shift evaluation.
+
+### Files to Modify
+- `evaluation/evaluator.py` — TTA flag + augmentation logic (~15 lines)
+- `config/base_config_v3.yaml` — add `eval.tta_enabled: true/false`
+
+### Priority
+**High for PlantDoc.** Universally accepted technique (Krizhevsky et al. 2012).
 
 ---
 
-## 4. Notes
+## 5. Data Augmentation for Domain Robustness
 
-- This file is a reference for future implementation and does not change current training or evaluation code.
-- Per-method checkpoint ranking columns (`rank`, `size_mb`, `disease_only_correct_pct`) require re-running `launcher_test.py` → evaluate-all — old CSVs are not auto-updated.
+### Problem
+Current training augmentations (random crop, flip, rotation ±15°, color jitter) are too mild to simulate real-world field conditions. PlantDoc images appear as a completely alien distribution.
+
+### Proposed Solution
+Apply **domain-randomization style** augmentations to PlantVillage images during training:
+- Random Gaussian blur (out-of-focus field photos)
+- Random coarse dropout / CutOut (occlusion)
+- Heavy brightness/contrast/saturation shifts
+- Random noise injection (low-light camera noise)
+- Random elastic transform / affine warp (camera angle variation)
+
+### Expected Gain
++5–15% PlantDoc accuracy. High risk / high reward — may hurt PlantVillage accuracy if overdone.
+
+### Files to Modify
+- `data/data_loader.py` — aggressive augmentation transforms
+- `config/base_config_v3.yaml` — augmentation strength toggles
+
+### Priority
+**Do only if PlantDoc is a major thesis contribution.** Requires full retraining of all models.
+
+---
+
+## Notes
+
+- This file tracks **only** work that has not been done yet
+- For completed features, see `architecture_design_v3.md` and the git log
+- Per-method checkpoint ranking CSVs require re-running `launcher_test_v3.py` → evaluate-all

@@ -1,112 +1,131 @@
 # How This Project Works
 
 ## Goal
-This project compares three parameter-efficient fine-tuning methods for plant leaf disease classification:
 
-1. `LoRA`
-2. `QLoRA`
-3. `Q/K LoRA`
+This project compares four parameter-efficient fine-tuning (PEFT) methods for plant leaf disease classification, all using EfficientNet-B0 as the backbone:
 
-All three methods use `EfficientNet-B0` as the backbone model.
+1. **LoRA** — standard low-rank adaptation (Hu et al. 2021)
+2. **QLoRA** — 4-bit NF4 quantization + LoRA (Dettmers et al. 2023)
+3. **QA-LoRA** — group-wise quantization + grouped LoRA (Xu et al. 2024)
+4. **Q/K LoRA** — selective INT8 Q-path + FP32 K-path (custom)
+
+Methods 1–3 are the **V3 track** (current). Method 4 is the **V1 track** (legacy).
+
+## Two Tracks
+
+| Track | Methods | Entry Point | Status |
+|-------|---------|-------------|--------|
+| **V3** (current) | LoRA V3, QLoRA V3, QA-LoRA V3 | `main_v3.py` / `launcher_v3.py` | Active |
+| **V1** (legacy) | LoRA, QLoRA, Q/K LoRA | `main.py` / `launcher.py` | Still runnable |
 
 ## Dataset
-The project uses the PlantVillage dataset, but the training pipeline is now locked to the official Hugging Face `color` split only.
 
-That means:
-- only RGB color images are used
-- grayscale images are not used
-- segmented images are not used
+The training pipeline is locked to the official Hugging Face PlantVillage `color` split only:
+- RGB color images only (no grayscale, no segmented)
+- `color/train` → split into train/val by `leaf_id`
+- `color/test` → held out for final evaluation
+- Approximate ratio: 68% train / 12% val / 20% test
 
-## Split Strategy
-The split logic is now:
+Validation is created by `leaf_id` grouping, not by raw image, to prevent leakage from multiple photos of the same physical leaf.
 
-1. Use the official Hugging Face `color/train`
-2. Use the official Hugging Face `color/test`
-3. Split `color/train` into `train` and `val`
+## Offline Training
 
-The important detail is that validation is created by `leaf_id`, not by raw image file.
+Training expects all assets to exist locally before starting. If assets are missing, the code stops with a clear message.
 
-Why this matters:
-- PlantVillage often has multiple photos of the same physical leaf
-- a naive image-level split can leak very similar images across sets
-- `leaf_id` grouping reduces that leakage risk
-
-Approximate overall ratio:
-- `68%` train
-- `12%` val
-- `20%` test
-
-## Offline Training Behavior
-Training and testing are now designed to be non-downloading.
-
-The launcher and main training path expect these assets to already exist locally:
+Run `download_assets.py` once to prepare:
 - PlantVillage `color` images
-- official HF `color` split metadata
-- cached EfficientNet-B0 pretrained weights
-
-If those assets are missing, the code stops with a clear message instead of downloading during training.
-
-## What `download_assets.py` Does
-This separate setup script prepares everything training needs:
-
-1. Downloads the local PlantVillage `color` archive
-2. Caches the official HF split metadata used for the offline split logic
-3. Downloads the pretrained EfficientNet-B0 weights
-
-After that, `launcher.py` is used only for training or tests.
+- HF `color` split metadata
+- EfficientNet-B0 pretrained weights
 
 ## Image Processing
-Training images:
-1. Resize to `256x256`
-2. Random crop to `224x224`
-3. Random horizontal flip
-4. Random rotation up to `15` degrees
-5. Brightness, contrast, and saturation jitter
-6. ImageNet normalization
 
-Validation and test images:
-1. Resize to `256×256` (preserve aspect ratio)
-2. Center crop to `224×224`
+**Training:**
+1. Resize to 256×256
+2. Random crop to 224×224
+3. Random horizontal flip
+4. Random rotation (±15°)
+5. Color jitter (brightness, contrast, saturation)
+6. ImageNet normalization (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+**Validation/Test:**
+1. Resize to 256×256 (preserve aspect ratio)
+2. Center crop to 224×224
 3. ImageNet normalization
 
-## PEFT Methods (LoRA vs QLoRA vs Q/K LoRA)
+## PEFT Methods
 
-All three share the same inference API: build model → load checkpoint → `model(image)`.
+### LoRA (V3)
+- **Paper**: Hu et al. 2021
+- **Quantization**: None (full FP32 backbone)
+- **Targets**: All pointwise (1×1) convolutions + `classifier.fc`
+- **Trainable fraction**: ~8% of total parameters
+- **Checkpoint**: ~18 MB
+- **V3 extras**: Merge support for zero-overhead inference
 
-| Method | What is quantized | LoRA targets | Typical checkpoint |
-|--------|-------------------|--------------|-------------------|
-| **LoRA** | Nothing (full FP32 backbone) | All pointwise convs + classifier | ~18 MB |
-| **QLoRA** | Q-path MBConv expand/project 1×1 (INT8) | Q-path + classifier only | ~8 MB |
-| **Q/K LoRA** | Q-path INT8; K-path SE layers stay FP32 | Q-path (r=16) + K-path SE + classifier (r=4) | ~9 MB |
+### QLoRA (V3)
+- **Paper**: Dettmers et al. 2023
+- **Quantization**: bitsandbytes 4-bit NF4 on Q-path 1×1 convs
+- **Targets**: Q-path pointwise convs + `features.8.0` + `classifier.fc`
+- **Compute dtype**: Dequantized to bfloat16 during forward
+- **Checkpoint**: ~8 MB
 
-Implementation lives in `models/peft/` (`lora.py`, `qlora.py`, `qklora.py`, `int8_utils.py`).
+### QA-LoRA (V3)
+- **Paper**: Xu et al. 2024 (ICLR)
+- **Quantization**: Group-wise INT8 with learned scale/zero-point per group
+- **LoRA A**: Grouped — shape `(L, rank)` instead of `(D_in, rank)`
+- **Targets**: Q-path pointwise convs + `features.8.0` + `classifier.fc`
+- **Does not use PEFT** — `QALoRAConv2d` replaces `nn.Conv2d` directly
+- **Checkpoint**: ~9.5 MB
 
-**Q/K naming**: Q = **Quantized** path, K = **Kept** high-precision path (not transformer Query/Key).
+### Q/K LoRA (V1)
+- **Custom design** — not from a specific paper
+- **Q-path** (Quantized): MBConv 1×1 convs → INT8 + LoRA rank 16
+- **K-path** (Kept FP32): SE layers + classifier → FP32 + LoRA rank 4
+- **Depthwise convs**: Frozen, no LoRA
+- **Checkpoint**: ~12 MB
 
-## Deployment artifacts
-- Model checkpoint: `experiments/results/checkpoints/<method>_best.pth`
-- Class labels: `config/class_labels.json` (auto-exported when data loads)
+## Layer Target Summary
+
+| Layer | LoRA V3 | QLoRA V3 | QA-LoRA V3 | Q/K LoRA |
+|-------|---------|----------|------------|----------|
+| MBConv expand 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ✅ INT8 + adapter |
+| MBConv project 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ✅ INT8 + adapter |
+| Head conv (`features.8.0`) | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ❌ frozen |
+| SE `fc1`/`fc2` | ❌ frozen | ❌ frozen | ❌ frozen | ✅ FP32 + adapter (r=4) |
+| Depthwise 3×3 | ❌ frozen | ❌ frozen | ❌ frozen | ❌ frozen |
+| Stem (`features.0.0`) | ❌ frozen | ❌ frozen | ❌ frozen | ❌ frozen |
+| `classifier.fc` | ✅ adapter | ✅ adapter | ✅ adapter | ✅ adapter (r=4) |
+
+## Deployment Artifacts
+
+- **Checkpoints**: `experiments/results/checkpoints/<method>_best.pth`
+- **Class labels**: `config/class_labels.json` (auto-exported when data loads)
+- **Cross-method ranking**: `experiments/results/eval/cross_method_ranking.csv`
+- **Dashboard**: `experiments/results/dashboard.html` (self-contained, no server needed)
 
 ## Model Roles
-- `models/backbone/`: the EfficientNet-B0 backbone
-- `models/peft/`: the LoRA, QLoRA, and Q/K LoRA implementations
-- `training/`: the trainer classes
-- `evaluation/`: metrics and test-time evaluation
-- `experiments/`: orchestration and saved outputs
+
+- `models/backbone/` — EfficientNet-B0 backbone
+- `models/peft/` — All PEFT implementations (LoRA, QLoRA, QA-LoRA, Q/K LoRA)
+- `training/` — Trainer classes (base + method-specific)
+- `evaluation/` — Metrics, confusion matrix, evaluator
+- `experiments/` — Orchestration and saved outputs
+- `web_app/` — Web UI for inference and visualization
 
 ## What Gets Saved
-When training finishes, the project stores:
-- checkpoints
-- logs
-- learning curves
-- confusion matrices
-- class-wise metrics
-- the experiment summary CSV
+
+When training finishes:
+- Checkpoints (best, last, optionally per-epoch)
+- Training logs
+- Learning curves (loss, accuracy vs epoch)
+- Confusion matrices
+- Class-wise metrics (precision, recall, F1)
+- Experiment summary CSV
 
 ## Summary
-The current workflow is:
 
 1. Prepare assets once with `download_assets.py`
-2. Start training with `launcher.py`
-3. Train only on the official HF `color` split
-4. Validate using a leakage-aware `leaf_id` split
+2. Train with `launcher_v3.py` (or `main_v3.py` directly)
+3. Evaluate with `launcher_test_v3.py`
+4. Generate dashboard with `generate_dashboard.py`
+5. Launch web UI with `run_web_ui.py`

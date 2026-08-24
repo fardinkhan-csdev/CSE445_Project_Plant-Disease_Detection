@@ -1,28 +1,13 @@
-# Data
-data/raw/
-data/processed/
-data/*.zip
-data/*.log
+# ══════════════════════════════════════════════════════════════════════════
+# .gitignore — Leaf Disease Classification Project
+# ══════════════════════════════════════════════════════════════════════════
 
-# Experiments
-experiments/results/checkpoints/
-experiments/results/plots/
-experiments/results/logs/
-experiments/results/logs_v3/
-experiments/results/eval/
-experiments/results/experiment_results*.csv
-experiments/results/training_status.json
+# ── Virtual Environment ──────────────────────────────────────────────────
+.venv/
+venv/
+env/
 
-# Large generated artifacts
-*.log
-*.png
-*.pth
-
-# Allow V3 plots push despite global *.png ignore
-!experiments/results/plots_v3/
-!experiments/results/plots_v3/*.png
-
-# Python
+# ── Python ───────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -32,14 +17,83 @@ __pycache__/
 .eggs/
 build/
 dist/
+*.egg
 
-# IDE
+# ── Data (large, downloaded separately) ─────────────────────────────────
+data/raw/
+data/processed/
+data/*.zip
+
+# ── Checkpoints ─────────────────────────────────────────────────────────
+# Ignore ALL .pth files EXCEPT _best.pth in canonical checkpoint dirs
+*.pth
+!experiments/results/checkpoints/*_best.pth
+!experiments/results/checkpoints_v3/*_best.pth
+
+# Ignore 1st-training and timestamped checkpoints entirely
+experiments/results/checkpoints (1st training)/
+experiments/results/checkpoints_v3/*_*_*.pth
+
+# ── Logs ────────────────────────────────────────────────────────────────
+*.log
+experiments/results/logs/
+experiments/results/logs_v3/
+
+# ── Plots (generated PNGs) ──────────────────────────────────────────────
+*.png
+
+# ── Evaluation CSVs ─────────────────────────────────────────────────────
+# Ignore per-method ranking CSVs and per-sample confidence CSVs
+experiments/results/eval/*_checkpoint_ranking.csv
+experiments/results/eval/*_confidences.csv
+experiments/results/eval/plantdoc_*.csv
+
+experiments/results/eval_v3/*_ranking.csv
+experiments/results/eval_v3/*_confidences.csv
+experiments/results/eval_v3/plantdoc_*.csv
+
+# Keep: experiment_results.csv, cross_method_ranking.csv (these are NOT ignored)
+
+# ── Dashboard (generated HTML) ──────────────────────────────────────────
+experiments/results/dashboard.html
+
+# ── Training status ─────────────────────────────────────────────────────
+experiments/results/training_status.json
+
+# ── Archive (legacy files, not active code) ──────────────────────────────
+_archive/
+
+# ── Test / Temporary Checkpoint Dirs ────────────────────────────────────
+checkpoint-test-*/
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────
 .vscode/
 .idea/
+.kilo/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ───────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# ── Presentation build scripts (one-time use) ──────────────────────────
+create_presentation.py
+fix_table.py
+
+# ══════════════════════════════════════════════════════════════════════════
+# WHAT IS TRACKED (kept in git):
+#
+# Source code:     *.py (except build scripts)
+# Configs:         config/*.yaml, config/*.json
+# Documentation:   *.md
+# Requirements:    requirements.txt
+# Batch scripts:   *.bat
+# Presentations:   *.pptx (your final deliverable)
+# Best checkpoint: experiments/results/checkpoints/*_best.pth
+#                  experiments/results/checkpoints_v3/*_best.pth
+# Summary CSVs:    experiments/results/experiment_results.csv
+#                  experiments/results/eval/cross_method_ranking.csv
+# ══════════════════════════════════════════════════════════════════════════
