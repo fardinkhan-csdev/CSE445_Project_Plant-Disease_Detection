@@ -39,6 +39,8 @@ TRAINER_MAP = {
     'qklora': QKLoRATrainer,
 }
 
+_V3_MODE = False
+
 CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "experiments", "results", "checkpoints")
 EVAL_DIR = os.path.join(PROJECT_ROOT, "experiments", "results", "eval")
 
@@ -158,10 +160,31 @@ def load_best_checkpoints(keys: Optional[List[str]] = None) -> Dict[str, nn.Modu
     class_to_idx, idx_to_class = load_class_labels()
     models = {}
 
-    keys = keys or list(TRAINER_MAP.keys())
+    if _V3_MODE:
+        from training.lora_trainer_v3 import LoRATrainerV3
+        from training.qlora_trainer_v3 import QLoRATrainerV3
+        from training.qalora_trainer import QALoRATrainer
+        trainer_map = {
+            'lora': LoRATrainerV3,
+            'qlora': QLoRATrainerV3,
+            'qalora': QALoRATrainer,
+        }
+        checkpoint_dir = os.path.join(PROJECT_ROOT, "experiments", "results", "checkpoints_v3")
+        key_prefix = {
+            'lora': 'lora_v3',
+            'qlora': 'qlora_v3',
+            'qalora': 'qalora',
+        }
+    else:
+        trainer_map = TRAINER_MAP
+        checkpoint_dir = CHECKPOINT_DIR
+        key_prefix = {k: k for k in TRAINER_MAP}
+
+    keys = keys or list(trainer_map.keys())
     for exp_key in keys:
-        trainer_cls = TRAINER_MAP[exp_key]
-        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"{exp_key}_best.pth")
+        trainer_cls = trainer_map[exp_key]
+        prefix = key_prefix.get(exp_key, exp_key)
+        checkpoint_path = os.path.join(checkpoint_dir, f"{prefix}_best.pth")
         if not os.path.exists(checkpoint_path):
             print(f"Skipping {exp_key}: checkpoint not found at {checkpoint_path}")
             continue
@@ -445,14 +468,10 @@ def _run_coral_evaluation(root_dir, segmented, split_keys, style_norm=False):
         out_name = "plantdoc_coral_stylenorm_segmented_results.csv"
     elif segmented:
         out_name = "plantdoc_coral_segmented_results.csv"
-    elif style_norm and feature_align:
-        out_name = "plantdoc_stylenorm_coral_results.csv"
     elif style_norm:
-        out_name = "plantdoc_stylenorm_results.csv"
-    elif feature_align:
-        out_name = "plantdoc_coral_results.csv"
+        out_name = "plantdoc_stylenorm_coral_results.csv"
     else:
-        out_name = "plantdoc_dual_split_results.csv"
+        out_name = "plantdoc_coral_results.csv"
 
     out_path = os.path.join(EVAL_DIR, out_name)
     fieldnames = ['method', 'split'] + METRIC_FIELDS + ['sample_count', 'checkpoint']
@@ -666,6 +685,105 @@ def _run_multires_evaluation(root_dir, segmented, split_keys, scales):
         writer.writerows(results)
 
     print(f"\nSaved multi-resolution evaluation results to {out_path}")
+    return out_path
+
+
+def _run_knn_multires_segmented_evaluation(root_dir, segmented, split_keys, scales, k=11):
+    if not scales:
+        scales = MULTIRES_DEFAULT_SCALES
+
+    root_dir = root_dir or os.path.join(PROJECT_ROOT, "data", "raw", "plantdoc_roboflow_cocojson")
+    if not os.path.isdir(root_dir):
+        raise FileNotFoundError(f"PlantDoc dataset root not found: {root_dir}")
+
+    class_to_idx, idx_to_class = load_class_labels()
+    available_splits = get_available_plantdoc_splits(root_dir)
+    if split_keys:
+        available_splits = [s for s in available_splits if s in split_keys]
+    if not available_splits:
+        raise RuntimeError(f"No PlantDoc split folders found under {root_dir}")
+
+    print("=" * 70)
+    print(f"QA-LoRA V3 Segmented k-NN Multi-Res Evaluation")
+    print(f"Scale pyramid: {'x'.join(str(s) for s in scales)}, k={k}")
+    print("=" * 70)
+    print(f"Using PlantDoc dataset root: {root_dir}")
+    print(f"Available splits: {', '.join(available_splits)}")
+    print(f"Segmentation: {segmented}")
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    from training.qalora_trainer import QALoRATrainer
+    trainer = QALoRATrainer(None, None, len(class_to_idx))
+    trainer.load_checkpoint('best')
+    model = trainer.model.to(device)
+    model.eval()
+
+    transform = get_val_test_transform()
+    pv_loader, _ = get_plantvillage_train_loader_for_knn()
+    results: List[Dict] = []
+
+    for split_name in available_splits:
+        print(f"\nEvaluating split: {split_name}")
+
+        if segmented:
+            base_dataset = PlantDocCOCODataset(
+                root_dir, split_name, class_to_idx,
+                transform=None, apply_segmentation=True
+            )
+            print(f"Segmenting {len(base_dataset)} images...")
+            for i in tqdm(range(len(base_dataset)), desc="Segmenting", leave=False):
+                base_dataset[i]
+        else:
+            base_dataset = None
+
+        pv_rec = extract_backbone_features(model, pv_loader, device, desc=f"PV train features (qalora)")
+        print(f"  PlantVillage reference features: {pv_rec['features'].shape}")
+
+        scale_features = []
+        for scale in scales:
+            t = build_transform_for_scale(scale)
+            if segmented:
+                dataset = SegmentedResDataset(base_dataset, transform=t)
+            else:
+                dataset = PlantDocCOCODataset(
+                    root_dir, split_name, class_to_idx,
+                    transform=t, apply_segmentation=False
+                )
+            loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
+            rec = extract_backbone_features(model, loader, device, desc=f"  PD features @ {scale}px")
+            print(f"  PlantDoc features @ {scale}px: {rec['features'].shape}")
+            scale_features.append(torch.tensor(rec['features']))
+
+        avg_features = torch.stack(scale_features).mean(dim=0).numpy()
+
+        knn = KNeighborsClassifier(n_neighbors=k, weights='distance', metric='cosine')
+        knn.fit(pv_rec['features'], pv_rec['labels'])
+        preds = knn.predict(avg_features)
+        probs = knn.predict_proba(avg_features)
+
+        metrics = calculate_metrics(rec['labels'], preds, idx_to_class, probs)
+        print(f"QALORA seg+knn+multires accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
+
+        scale_str = "x".join(str(s) for s in scales)
+        results.append(build_metric_row(
+            method="QALORA-SEG-KNN-MULTIRES",
+            split=split_name,
+            metrics=metrics,
+            sample_count=len(dataset),
+            checkpoint=f"qalora_best.pth (seg-knn-multires-{scale_str})",
+        ))
+
+    os.makedirs(EVAL_DIR, exist_ok=True)
+    out_name = "plantdoc_qalora_seg_knn_multires_results.csv"
+    out_path = os.path.join(EVAL_DIR, out_name)
+    fieldnames = ['method', 'split'] + METRIC_FIELDS + ['sample_count', 'checkpoint']
+    with open(out_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nSaved Seg+KNN+Multi-Res evaluation results to {out_path}")
     return out_path
 
 
@@ -885,185 +1003,219 @@ def run_plantdoc_evaluation(
     quality_threshold: float = 0.3,
     style_norm: bool = False,
     feature_align: bool = False,
+    v3: bool = False,
 ):
-    print("=" * 70)
-    labels = []
-    if segmented:
-        labels.append("Segmented")
-    if knn:
-        labels.append("k-NN")
-    if ensemble:
-        labels.append("Ensemble")
-    if multires:
-        labels.append(f"Multi-Res-{'-'.join(str(s) for s in (multires_scales or MULTIRES_DEFAULT_SCALES))}")
-    if quality_gate:
-        labels.append(f"Quality-Gate-{quality_threshold}")
-    if style_norm:
-        labels.append("StyleNorm")
-    if feature_align:
-        labels.append("CORAL")
-    label = " ".join(labels) if labels else "Standard"
-    print(f"PlantDoc {label} Evaluation")
-    print("=" * 70)
+    global TRAINER_MAP, CHECKPOINT_DIR, EVAL_DIR, PROBS_CSV, _V3_MODE
+    _orig_trainer_map = TRAINER_MAP
+    _orig_cp_dir = CHECKPOINT_DIR
+    _orig_eval_dir = EVAL_DIR
+    _orig_probs_csv = PROBS_CSV
 
-    if feature_align:
-        return _run_coral_evaluation(root_dir, segmented, split_keys, style_norm=style_norm)
+    _V3_MODE = v3
 
-    if quality_gate:
-        return _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=quality_threshold)
-
-    if multires and (knn or ensemble):
-        raise ValueError("Cannot combine --multires with --knn or --ensemble.")
-
-    root_dir = root_dir or os.path.join(PROJECT_ROOT, "data", "raw", "plantdoc_roboflow_cocojson")
-    if not os.path.isdir(root_dir):
-        raise FileNotFoundError(f"PlantDoc dataset root not found: {root_dir}")
-
-    class_to_idx, idx_to_class = load_class_labels()
-
-    if knn:
-        return _run_knn_evaluation(root_dir, segmented, split_keys, knn_k)
-
-    if multires:
-        return _run_multires_evaluation(root_dir, segmented, split_keys, multires_scales)
-
-    if style_norm:
-        pv_mean, pv_std = _compute_pv_raw_stats()
-        transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            StyleNormalize(pv_mean, pv_std),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+    if v3:
+        from training.lora_trainer_v3 import LoRATrainerV3
+        from training.qlora_trainer_v3 import QLoRATrainerV3
+        from training.qalora_trainer import QALoRATrainer
+        TRAINER_MAP = {
+            'lora': LoRATrainerV3,
+            'qlora': QLoRATrainerV3,
+            'qalora': QALoRATrainer,
+        }
+        CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "experiments", "results", "checkpoints_v3")
+        EVAL_DIR = os.path.join(PROJECT_ROOT, "experiments", "results", "eval_v3")
+        PROBS_CSV = os.path.join(EVAL_DIR, "plantdoc_segmented_probs_v3.csv")
     else:
-        transform = get_val_test_transform()
+        TRAINER_MAP = _orig_trainer_map
+        CHECKPOINT_DIR = _orig_cp_dir
+        EVAL_DIR = _orig_eval_dir
+        PROBS_CSV = _orig_probs_csv
 
-    available_splits = get_available_plantdoc_splits(root_dir)
-    if split_keys:
-        available_splits = [s for s in available_splits if s in split_keys]
-    if not available_splits:
-        raise RuntimeError(f"No PlantDoc split folders found under {root_dir}")
-
-    print(f"Using PlantDoc dataset root: {root_dir}")
-    print(f"Available splits: {', '.join(available_splits)}")
-    print(f"Segmentation: {segmented}")
-    print(f"Ensemble: {ensemble}")
-    print(f"Style Normalization: {style_norm}")
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    results: List[Dict] = []
-
-    if ensemble and not segmented:
-        if not os.path.exists(PROBS_CSV):
-            raise RuntimeError(
-                f"Missing {PROBS_CSV}. "
-                "Run option 2 (segmented evaluation) first to generate per-model probabilities."
-            )
-
-        print(f"Reading per-sample probabilities from {PROBS_CSV}")
-        num_rows = sum(1 for _ in open(PROBS_CSV)) - 1
-        print(f"Found {num_rows} samples")
-
-        for split_name in available_splits:
-            print(f"\nComputing ensemble for split: {split_name}")
-            metrics = compute_ensemble_from_probs_csv(PROBS_CSV, idx_to_class)
-
-            print(f"ENSEMBLE accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
-            results.append(build_metric_row(
-                method="ENSEMBLE",
-                split=split_name,
-                metrics=metrics,
-                sample_count=num_rows,
-                checkpoint="lora_best+qlora_best+qklora_best.pth",
-            ))
-    else:
-        models = load_best_checkpoints()
-        if not models:
-            raise RuntimeError("No checkpoints found for evaluation")
-
-        all_records = {}
-
-        for split_name in available_splits:
-            print(f"\nEvaluating split: {split_name}")
-            dataset = PlantDocCOCODataset(
-                root_dir, split_name, class_to_idx,
-                transform=transform, apply_segmentation=segmented
-            )
-            if len(dataset) == 0:
-                print(f"No mapped samples found for split '{split_name}'.")
-                continue
-
-            if segmented:
-                print(f"Segmenting {len(dataset)} images...")
-                for i in tqdm(range(len(dataset)), desc="Segmenting", leave=False):
-                    dataset[i]
-
-            loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
-
-            split_records = {}
-            for exp_key, trainer_cls in TRAINER_MAP.items():
-                if exp_key not in models:
-                    continue
-
-                print(f"Evaluating {exp_key.upper()} on {split_name}...")
-                rec = evaluate_single_and_collect(models[exp_key], loader, device)
-                split_records[exp_key] = rec
-
-                metrics = calculate_metrics(rec['labels'], rec['preds'], idx_to_class, rec['probs'])
-                print(f"{exp_key.upper()} accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
-                results.append(build_metric_row(
-                    method=exp_key.upper(),
-                    split=split_name,
-                    metrics=metrics,
-                    sample_count=len(dataset),
-                    checkpoint=f"{exp_key}_best.pth",
-                ))
-
-            all_records[split_name] = split_records
-
+    try:
+        print("=" * 70)
+        labels = []
         if segmented:
-            first_split = available_splits[0]
-            save_probs_csv(all_records[first_split], list(TRAINER_MAP.keys()), idx_to_class, PROBS_CSV)
+            labels.append("Segmented")
+        if knn:
+            labels.append("k-NN")
+        if ensemble:
+            labels.append("Ensemble")
+        if multires:
+            labels.append(f"Multi-Res-{'-'.join(str(s) for s in (multires_scales or MULTIRES_DEFAULT_SCALES))}")
+        if quality_gate:
+            labels.append(f"Quality-Gate-{quality_threshold}")
+        if style_norm:
+            labels.append("StyleNorm")
+        if feature_align:
+            labels.append("CORAL")
+        label = " ".join(labels) if labels else "Standard"
+        print(f"PlantDoc {label} Evaluation")
+        print("=" * 70)
+    
+        if feature_align:
+            return _run_coral_evaluation(root_dir, segmented, split_keys, style_norm=style_norm)
+    
+        if quality_gate:
+            return _run_quality_gate_evaluation(root_dir, segmented, split_keys, threshold=quality_threshold)
+    
+        if multires and knn:
+            return _run_knn_multires_segmented_evaluation(root_dir, segmented, split_keys, multires_scales, knn_k)
 
-        if ensemble and segmented:
-            print(f"\nComputing ensemble from saved probabilities...")
+        root_dir = root_dir or os.path.join(PROJECT_ROOT, "data", "raw", "plantdoc_roboflow_cocojson")
+        if not os.path.isdir(root_dir):
+            raise FileNotFoundError(f"PlantDoc dataset root not found: {root_dir}")
+    
+        class_to_idx, idx_to_class = load_class_labels()
+    
+        if knn:
+            return _run_knn_evaluation(root_dir, segmented, split_keys, knn_k)
+    
+        if multires:
+            return _run_multires_evaluation(root_dir, segmented, split_keys, multires_scales)
+    
+        if style_norm:
+            pv_mean, pv_std = _compute_pv_raw_stats()
+            transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                StyleNormalize(pv_mean, pv_std),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+        else:
+            transform = get_val_test_transform()
+    
+        available_splits = get_available_plantdoc_splits(root_dir)
+        if split_keys:
+            available_splits = [s for s in available_splits if s in split_keys]
+        if not available_splits:
+            raise RuntimeError(f"No PlantDoc split folders found under {root_dir}")
+    
+        print(f"Using PlantDoc dataset root: {root_dir}")
+        print(f"Available splits: {', '.join(available_splits)}")
+        print(f"Segmentation: {segmented}")
+        print(f"Ensemble: {ensemble}")
+        print(f"Style Normalization: {style_norm}")
+    
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        results: List[Dict] = []
+    
+        if ensemble and not segmented:
+            if not os.path.exists(PROBS_CSV):
+                raise RuntimeError(
+                    f"Missing {PROBS_CSV}. "
+                    "Run option 2 (segmented evaluation) first to generate per-model probabilities."
+                )
+    
+            print(f"Reading per-sample probabilities from {PROBS_CSV}")
+            num_rows = sum(1 for _ in open(PROBS_CSV)) - 1
+            print(f"Found {num_rows} samples")
+    
             for split_name in available_splits:
-                print(f"Computing ensemble for split: {split_name}")
+                print(f"\nComputing ensemble for split: {split_name}")
                 metrics = compute_ensemble_from_probs_csv(PROBS_CSV, idx_to_class)
-
+    
                 print(f"ENSEMBLE accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
                 results.append(build_metric_row(
                     method="ENSEMBLE",
                     split=split_name,
                     metrics=metrics,
-                    sample_count=len(all_records[split_name][list(TRAINER_MAP.keys())[0]]['labels']),
+                    sample_count=num_rows,
                     checkpoint="lora_best+qlora_best+qklora_best.pth",
                 ))
-
-    os.makedirs(EVAL_DIR, exist_ok=True)
-    if style_norm:
-        out_name = "plantdoc_stylenorm_segmented_results.csv" if segmented else "plantdoc_stylenorm_results.csv"
-    elif knn:
-        out_name = "plantdoc_knn_segmented_results.csv" if segmented else "plantdoc_knn_results.csv"
-    elif multires:
-        out_name = "plantdoc_multires_segmented_results.csv" if segmented else "plantdoc_multires_results.csv"
-    elif ensemble:
-        out_name = "plantdoc_ensemble_segmented_results.csv"
-    elif segmented:
-        out_name = "plantdoc_segmented_results.csv"
-    else:
-        out_name = "plantdoc_dual_split_results.csv"
-
-    out_path = os.path.join(EVAL_DIR, out_name)
-    fieldnames = ['method', 'split'] + METRIC_FIELDS + ['sample_count', 'checkpoint']
-    with open(out_path, 'w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-
-    print(f"\nSaved evaluation results to {out_path}")
-    return out_path
+        else:
+            models = load_best_checkpoints()
+            if not models:
+                raise RuntimeError("No checkpoints found for evaluation")
+    
+            all_records = {}
+    
+            for split_name in available_splits:
+                print(f"\nEvaluating split: {split_name}")
+                dataset = PlantDocCOCODataset(
+                    root_dir, split_name, class_to_idx,
+                    transform=transform, apply_segmentation=segmented
+                )
+                if len(dataset) == 0:
+                    print(f"No mapped samples found for split '{split_name}'.")
+                    continue
+    
+                if segmented:
+                    print(f"Segmenting {len(dataset)} images...")
+                    for i in tqdm(range(len(dataset)), desc="Segmenting", leave=False):
+                        dataset[i]
+    
+                loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
+    
+                split_records = {}
+                for exp_key, trainer_cls in TRAINER_MAP.items():
+                    if exp_key not in models:
+                        continue
+    
+                    print(f"Evaluating {exp_key.upper()} on {split_name}...")
+                    rec = evaluate_single_and_collect(models[exp_key], loader, device)
+                    split_records[exp_key] = rec
+    
+                    metrics = calculate_metrics(rec['labels'], rec['preds'], idx_to_class, rec['probs'])
+                    print(f"{exp_key.upper()} accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
+                    results.append(build_metric_row(
+                        method=exp_key.upper(),
+                        split=split_name,
+                        metrics=metrics,
+                        sample_count=len(dataset),
+                        checkpoint=f"{exp_key}_best.pth",
+                    ))
+    
+                all_records[split_name] = split_records
+    
+            if segmented:
+                first_split = available_splits[0]
+                save_probs_csv(all_records[first_split], list(TRAINER_MAP.keys()), idx_to_class, PROBS_CSV)
+    
+            if ensemble and segmented:
+                print(f"\nComputing ensemble from saved probabilities...")
+                for split_name in available_splits:
+                    print(f"Computing ensemble for split: {split_name}")
+                    metrics = compute_ensemble_from_probs_csv(PROBS_CSV, idx_to_class)
+    
+                    print(f"ENSEMBLE accuracy on {split_name}: {metrics['accuracy'] * 100:.2f}%")
+                    results.append(build_metric_row(
+                        method="ENSEMBLE",
+                        split=split_name,
+                        metrics=metrics,
+                        sample_count=len(all_records[split_name][list(TRAINER_MAP.keys())[0]]['labels']),
+                        checkpoint="lora_best+qlora_best+qklora_best.pth",
+                    ))
+    
+        os.makedirs(EVAL_DIR, exist_ok=True)
+        if style_norm:
+            out_name = "plantdoc_stylenorm_segmented_results.csv" if segmented else "plantdoc_stylenorm_results.csv"
+        elif knn:
+            out_name = "plantdoc_knn_segmented_results.csv" if segmented else "plantdoc_knn_results.csv"
+        elif multires:
+            out_name = "plantdoc_multires_segmented_results.csv" if segmented else "plantdoc_multires_results.csv"
+        elif ensemble:
+            out_name = "plantdoc_ensemble_segmented_results.csv"
+        elif segmented:
+            out_name = "plantdoc_segmented_results.csv"
+        else:
+            out_name = "plantdoc_dual_split_results.csv"
+    
+        out_path = os.path.join(EVAL_DIR, out_name)
+        fieldnames = ['method', 'split'] + METRIC_FIELDS + ['sample_count', 'checkpoint']
+        with open(out_path, 'w', newline='', encoding='utf-8') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(results)
+    
+        print(f"\nSaved evaluation results to {out_path}")
+        return out_path
+    finally:
+        TRAINER_MAP = _orig_trainer_map
+        CHECKPOINT_DIR = _orig_cp_dir
+        EVAL_DIR = _orig_eval_dir
+        PROBS_CSV = _orig_probs_csv
+        _V3_MODE = False
 
 
 if __name__ == '__main__':
@@ -1080,6 +1232,7 @@ if __name__ == '__main__':
     parser.add_argument('--quality-threshold', type=float, default=0.6, help='Minimum quality score to keep (0..1, default: 0.6)')
     parser.add_argument('--style-norm', action='store_true', help='Apply test-time style normalization (match PlantDoc to PlantVillage color stats)')
     parser.add_argument('--feature-align', action='store_true', help='Apply CORAL feature whitening at test time (align PlantDoc features to PlantVillage)')
+    parser.add_argument('--v3', action='store_true', help='Use V3 checkpoints (LoRA V3 / QLoRA V3 / QA-LoRA V3)')
     args = parser.parse_args()
 
     run_plantdoc_evaluation(
@@ -1095,4 +1248,5 @@ if __name__ == '__main__':
         quality_threshold=args.quality_threshold,
         style_norm=args.style_norm,
         feature_align=args.feature_align,
+        v3=args.v3,
     )

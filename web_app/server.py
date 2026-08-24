@@ -68,9 +68,10 @@ class WebUIRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/models":
             self.send_json_response({
                 "models": [
-                    {"id": "lora", "name": "LoRA (Baseline)", "desc": "Broad adaptation on all non-depthwise Conv2d layers"},
-                    {"id": "qlora", "name": "CNN-QLoRA (Quantized Q-Path)", "desc": "INT8 weight-only on MBConv 1x1 project/expand convs"},
-                    {"id": "qklora", "name": "CNN-QKLoRA (Quantized Q + FP32 K)", "desc": "Selective INT8 Q-Path (r=16) + FP32 SE/K-Path (r=4)"}
+                    {"id": "lora", "name": "LoRA V3", "desc": "PEFT LoRA on Q-path 1x1 convs + classifier"},
+                    {"id": "qlora", "name": "QLoRA V3", "desc": "bitsandbytes NF4 Q-path + LoRA adapters"},
+                    {"id": "qalora", "name": "QA-LoRA V3", "desc": "Group-wise INT4 quantization + grouped LoRA (Algorithm 1)"},
+                    {"id": "qklora", "name": "QKLoRA (Legacy)", "desc": "Previous selective INT8 Q/K-path experiment"}
                 ]
             })
             return

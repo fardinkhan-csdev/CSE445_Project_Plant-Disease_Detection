@@ -1,0 +1,10 @@
+method,split,accuracy,f1_macro,binary_accuracy,binary_f1,binary_roc_auc,both_correct_pct,name_only_correct_pct,disease_only_correct_pct,none_correct_pct,sample_count,checkpoint
+LORA,train,19.53,10.69,74.42,83.87,0.7115,19.53,18.15,9.35,52.97,1818,lora_best.pth
+QLORA,train,17.0,9.97,75.96,84.46,0.7472,17.0,16.89,12.32,53.8,1818,qlora_best.pth
+QALORA,train,20.85,12.69,75.25,83.88,0.812,20.85,22.77,12.43,43.95,1818,qalora_best.pth
+LORA,valid,15.92,7.34,75.78,81.48,0.8803,15.92,20.07,20.76,43.25,289,lora_best.pth
+QLORA,valid,14.19,7.75,81.31,84.92,0.8793,14.19,15.57,25.95,44.29,289,qlora_best.pth
+QALORA,valid,14.53,7.84,81.31,85.0,0.9083,14.53,31.14,24.57,29.76,289,qalora_best.pth
+LORA,test,21.56,17.56,87.16,90.67,0.8998,21.56,17.89,19.72,40.83,218,lora_best.pth
+QLORA,test,20.64,15.62,87.61,90.78,0.9224,20.64,16.06,25.23,38.07,218,qlora_best.pth
+QALORA,test,22.94,15.94,85.32,89.12,0.9326,22.94,25.69,22.94,28.44,218,qalora_best.pth

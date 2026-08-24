@@ -6,6 +6,6 @@ peft:
   dropout: 0.1
   target_modules: null
   quantization:
-    bits: 8
-    quant_type: "groupwise_true_int8"
+    bits: 4
+    quant_type: "groupwise_true_int4"
     learnable_zp: true

@@ -1,0 +1,4 @@
+method,split,accuracy,f1_macro,binary_accuracy,binary_f1,binary_roc_auc,both_correct_pct,name_only_correct_pct,disease_only_correct_pct,none_correct_pct,sample_count,checkpoint
+LORA,test,19.72,16.14,83.03,87.54,0.8922,19.72,19.72,20.18,40.37,218,lora_best.pth
+QLORA,test,22.02,18.98,81.65,86.21,0.8932,22.02,18.35,22.02,37.61,218,qlora_best.pth
+QALORA,test,22.94,16.86,81.19,86.1,0.9152,22.94,24.31,20.18,32.57,218,qalora_best.pth

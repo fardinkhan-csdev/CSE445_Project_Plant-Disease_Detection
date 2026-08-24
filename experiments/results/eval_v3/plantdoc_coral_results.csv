@@ -1,0 +1,4 @@
+method,split,accuracy,f1_macro,binary_accuracy,binary_f1,binary_roc_auc,both_correct_pct,name_only_correct_pct,disease_only_correct_pct,none_correct_pct,sample_count,checkpoint
+LORA,test,5.05,0.45,61.93,74.3,0.5807,5.05,3.67,11.01,80.28,218,lora_best.pth (coral)
+QLORA,test,5.05,0.39,63.76,77.75,0.4984,5.05,3.67,4.59,86.7,218,qlora_best.pth (coral)
+QALORA,test,3.21,0.26,35.78,0.0,0.5372,3.21,0.0,32.57,64.22,218,qalora_best.pth (coral)

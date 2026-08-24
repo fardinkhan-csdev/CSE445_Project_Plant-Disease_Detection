@@ -3,17 +3,17 @@
 Real QA-LoRA:
   - Group-wise true integer quantization: each output channel's weights split into L groups,
     each group has its own learnable scale and zero-point (increases quantization DOF).
-    Weights are stored as actual INT8 integers (not FP32 fake-quantized), matching the paper's
+    Weights are stored as actual INT4 integers (not FP32 fake-quantized), matching the paper's
     protocol of loading a true quantized base before fine-tuning.
-  - Grouped LoRA A: LoRA A shape reduced from (D_in, r) to (L, r) by averaging the
-    input features into L groups via adaptive avg-pool (decreases adaptation DOF).
-  - Balance goal: increase quantization params and decrease adaptation params, so after
-    training the weights stay fully quantized without FP16 fallback.
+  - Zero-point merge rule: after fine-tuning, zero-points are updated to absorb LoRA adapters
+    into quantized weights without FP16 fallback (paper's Algorithm 1).
 
 Reference Algorithm 1 from paper (adapted for Conv2d):
   QA = nn.AdaptiveAvgPool1d(L)
   lora_A = (L, r)       -- grouped, smaller than standard (D_in, r)
   lora_B = (C_out, r)   -- standard
+  quantization: W_q = clamp(round(W / alpha_j + beta_j), -8, 7)  -- INT4 asymmetric
+  merge rule: beta_new = beta - scaling * (lora_B @ lora_A.T) / alpha_j
   forward:
     W = dequantize(weight_q, scale, zp)  -- true integer base, not fake-quant
     result = conv2d(x, W)
@@ -58,26 +58,31 @@ class QALoRAConv2d(nn.Module):
         self.padding = conv.padding if isinstance(conv.padding, tuple) else (conv.padding, conv.padding)
         self.dilation = conv.dilation
         self.groups = conv.groups
+        self.out_channels = C_out
+        self.in_channels = C_in
+        self.kernel_size = (k_h, k_w)
 
         with torch.no_grad():
             W_flat = conv.weight.detach().view(C_out, -1)
             W_grouped = W_flat.view(C_out, num_groups, self.group_size)
-            per_group_max = W_grouped.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
-            init_scale = (per_group_max / 127.0).squeeze(-1)
+            per_group_max = W_grouped.amax(dim=-1, keepdim=True)
+            per_group_min = W_grouped.amin(dim=-1, keepdim=True)
+            range_per_group = (per_group_max - per_group_min).clamp(min=1e-8)
+            init_scale = (range_per_group / 15.0).squeeze(-1)
+            init_zp = -8.0 - per_group_min.squeeze(-1) / init_scale
 
             scale_view = init_scale.view(-1, num_groups, 1)
-            zp_view = torch.zeros(C_out, num_groups, device=conv.weight.device).view(-1, num_groups, 1)
-            W_quant = torch.round(W_grouped / scale_view + zp_view).clamp(-128, 127).to(torch.int8)
+            zp_view = init_zp.view(-1, num_groups, 1)
+            W_quant = torch.round(W_grouped / scale_view + zp_view).clamp(-8, 7).to(torch.int8)
 
         self.register_buffer("weight_q", W_quant)
-        self.register_buffer("weight_orig", conv.weight.detach().clone().contiguous())
         if conv.bias is not None:
             self.register_buffer("bias", conv.bias.detach().clone().contiguous())
         else:
             self.register_buffer("bias", None)
 
         self.scale = nn.Parameter(init_scale)
-        self.zero_point = nn.Parameter(torch.zeros(C_out, num_groups))
+        self.zero_point = nn.Parameter(init_zp)
 
         self.lora_A = nn.Parameter(torch.zeros(num_groups, rank))
         self.lora_B = nn.Parameter(torch.zeros(C_out, rank))
@@ -89,13 +94,13 @@ class QALoRAConv2d(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C_in, H, W = x.shape
-        _, _, k_h, k_w = self.weight_orig.shape
+        k_h, k_w = self.kernel_size
 
         W_q = self.weight_q.float()
         scale_view = self.scale.view(-1, self.num_groups, 1)
         zp_view = self.zero_point.view(-1, self.num_groups, 1)
         W_dequant = (W_q - zp_view) * scale_view
-        W_dequant = W_dequant.view_as(self.weight_orig)
+        W_dequant = W_dequant.view(self.out_channels, self.in_channels, k_h, k_w)
 
         out = F.conv2d(
             x, W_dequant, self.bias, self.stride, self.padding, self.dilation, self.groups
@@ -119,9 +124,54 @@ class QALoRAConv2d(nn.Module):
 
         l_out_h = (H + 2 * self.padding[0] - k_h) // self.stride[0] + 1
         l_out_w = (H + 2 * self.padding[1] - k_w) // self.stride[1] + 1
-        lora_spatial = lora_out.view(B, self.weight_orig.shape[0], l_out_h, l_out_w)
+        lora_spatial = lora_out.view(B, self.out_channels, l_out_h, l_out_w)
 
         return out + lora_spatial
+
+    def merge_with_quantization(self) -> None:
+        """Merge LoRA adapters into quantized weights via zero-point update.
+
+        Implements the paper's Algorithm 1 merge rule:
+            beta_new = beta - scaling * (lora_B @ lora_A.T) / alpha_j
+
+        After calling this, the quantized weights + updated zero-points represent
+        the fine-tuned model. lora_A and lora_B are zeroed to avoid double-counting
+        in subsequent forward passes.
+        """
+        with torch.no_grad():
+            adapter_update = self.lora_B @ self.lora_A.t()
+            zp_update = self.scaling * adapter_update / self.scale
+            self.zero_point.data -= zp_update
+            self.lora_A.zero_()
+            self.lora_B.zero_()
+
+
+def merge_qalora_weights(model: nn.Module) -> None:
+    """Merge QA-LoRA adapters into quantized weights for all QALoRAConv2d layers."""
+    qalora_layers = [m for m in model.modules() if isinstance(m, QALoRAConv2d)]
+    if not qalora_layers:
+        print("QA-LoRA: no QALoRAConv2d layers found to merge.")
+        return
+    for layer in qalora_layers:
+        layer.merge_with_quantization()
+    print(f"QA-LoRA: merged {len(qalora_layers)} layer(s).")
+
+
+def save_merged_qalora_model(model: nn.Module, save_path: str) -> None:
+    """Save a merged QA-LoRA model state dict for INT4 inference."""
+    torch.save(model.state_dict(), save_path)
+    print(f"QA-LoRA: merged state dict saved to {save_path}")
+
+
+def load_merged_qalora_for_inference(num_classes: int, state_dict_path: str, device: str = "cpu") -> nn.Module:
+    """Load a merged QA-LoRA checkpoint for INT4 inference."""
+    model = get_qalora_model(num_classes=num_classes)
+    state = torch.load(state_dict_path, map_location=device, weights_only=True)
+    model.load_state_dict(state)
+    model.eval()
+    model.to(device)
+    print(f"QA-LoRA: merged checkpoint loaded from {state_dict_path}")
+    return model
 
 
 def get_qalora_model(

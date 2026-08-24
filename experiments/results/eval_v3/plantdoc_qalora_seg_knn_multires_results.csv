@@ -1,0 +1,2 @@
+method,split,accuracy,f1_macro,binary_accuracy,binary_f1,binary_roc_auc,both_correct_pct,name_only_correct_pct,disease_only_correct_pct,none_correct_pct,sample_count,checkpoint
+QALORA-SEG-KNN-MULTIRES,test,17.89,12.19,78.44,84.79,0.8418,17.89,26.15,18.81,37.16,218,qalora_best.pth (seg-knn-multires-192x224x256)

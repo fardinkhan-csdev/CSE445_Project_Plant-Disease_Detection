@@ -33,7 +33,7 @@ def rank_experiments():
             except Exception:
                 continue
 
-    methods = ["lora", "qlora", "qklora"]
+    methods = ["lora", "qlora", "qklora", "qalora"]
     ranked_rows = []
 
     for method in methods:

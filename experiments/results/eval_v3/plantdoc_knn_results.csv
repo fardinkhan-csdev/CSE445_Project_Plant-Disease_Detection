@@ -1,0 +1,4 @@
+method,split,accuracy,f1_macro,binary_accuracy,binary_f1,binary_roc_auc,both_correct_pct,name_only_correct_pct,disease_only_correct_pct,none_correct_pct,sample_count,checkpoint
+KNN-LORA,test,22.02,16.26,87.61,90.97,0.8704,22.02,22.02,21.1,34.86,218,lora_best.pth (k=11)
+KNN-QLORA,test,22.48,16.62,84.86,88.89,0.8391,22.48,19.27,23.39,34.86,218,qlora_best.pth (k=11)
+KNN-QALORA,test,22.94,15.96,84.4,88.67,0.8871,22.94,27.52,22.02,27.52,218,qalora_best.pth (k=11)

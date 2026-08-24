@@ -1,14 +1,14 @@
-"""CNN-QLoRA V3 — real 4-bit NF4 via bitsandbytes on 1×1 conv layers.
+"""CNN-QLoRA V3 — real 4-bit NF4 via bitsandbytes on 1x1 conv layers.
 
 Difference from V1 QLoRA:
   V1: custom INT8 per-channel quantization (weight-only, CNN workaround)
   V3: uses bitsandbytes 4-bit NF4 quantization on Q-path pointwise convs,
       matching Dettmers et al. (2023) more closely.
-  V3 compute dtype: bfloat16, matching the paper's BF16 computation requirement.
+  V3 compute dtype: matches input dtype, consistent with autocast.
 
 Strategy:
   1. Build backbone, locate Q-path pointwise convs
-  2. Quantize their weights to NF4 and store as buffers
+  2. Quantize their weights to NF4 and store as buffers + serialize QuantState
   3. Freeze all backbone weights
   4. Apply PEFT LoRA on top of quantized base layers
 """
@@ -30,7 +30,23 @@ try:
 except ImportError:
     BNB_AVAILABLE = False
 
-COMPUTE_DTYPE = torch.bfloat16
+
+class _QStateFor4bit:
+    """Minimal stand-in for bitsandbytes QuantState, reconstructed from saved buffers."""
+    __slots__ = ('absmax', 'quant_map', 'blocksize', 'quant_type', 'dtype', 'shape',
+                 'nested', 'offset', 'state2')
+
+    def __init__(self, absmax, quant_map, blocksize, quant_type, dtype, shape,
+                 nested=False, offset=None, state2=None):
+        self.absmax = absmax
+        self.quant_map = quant_map
+        self.blocksize = blocksize
+        self.quant_type = quant_type
+        self.dtype = dtype
+        self.shape = shape
+        self.nested = nested
+        self.offset = offset
+        self.state2 = state2
 
 
 def _quantize_conv_to_nf4(conv: nn.Conv2d) -> None:
@@ -48,8 +64,11 @@ def _quantize_conv_to_nf4(conv: nn.Conv2d) -> None:
         )
 
     q_weight = q_weight.contiguous()
+    q_state_dict = q_state.as_dict()
     conv.register_buffer('q_weight', q_weight)
-    conv.q_state = q_state
+    conv.register_buffer('_q_state_absmax', q_state_dict['absmax'])
+    conv.register_buffer('_q_state_quant_map', q_state_dict['quant_map'])
+    conv.register_buffer('_q_state_blocksize', torch.tensor(q_state_dict['blocksize'], dtype=torch.int64))
     if conv.bias is not None:
         conv.register_buffer('_orig_bias', conv.bias.clone())
     else:
@@ -58,18 +77,33 @@ def _quantize_conv_to_nf4(conv: nn.Conv2d) -> None:
     if "weight" in conv._parameters:
         del conv._parameters["weight"]
 
+    conv._nf4_quant_type = q_state_dict['quant_type']
+    conv._nf4_shape = tuple(q_state_dict['shape'])
+    conv._nf4_dtype = q_state_dict['dtype']
+    conv._nf4_nested = bool(q_state_dict.get('nested', False))
     _patch_conv_forward(conv)
 
 
+def _build_q_state(conv: nn.Conv2d):
+    dtype = getattr(conv, '_nf4_dtype', torch.float32)
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, torch.float32)
+    return _QStateFor4bit(
+        absmax=conv._q_state_absmax,
+        quant_map=conv._q_state_quant_map,
+        blocksize=int(conv._q_state_blocksize.item()),
+        quant_type=getattr(conv, '_nf4_quant_type', 'nf4'),
+        dtype=dtype,
+        shape=getattr(conv, '_nf4_shape', (conv.out_channels, conv.in_channels)),
+        nested=getattr(conv, '_nf4_nested', False),
+    )
+
+
 def _dequantize_conv_weight(conv: nn.Conv2d) -> torch.Tensor:
-    q_weight = conv.q_weight
-    q_state = conv.q_state
-    target_device = q_weight.device
-    if getattr(q_state, 'absmax', None) is not None and q_state.absmax.device != target_device:
-        q_state.absmax = q_state.absmax.to(target_device)
-    w_deq = bnb_f.dequantize_4bit(q_weight, q_state)
+    q_state = _build_q_state(conv)
+    w_deq = bnb_f.dequantize_4bit(conv.q_weight, q_state)
     w_deq = w_deq.reshape(conv.out_channels, conv.in_channels, 1, 1)
-    return w_deq.to(COMPUTE_DTYPE)
+    return w_deq
 
 
 def _patch_conv_forward(conv: nn.Conv2d) -> None:
@@ -81,10 +115,10 @@ def _patch_conv_forward(conv: nn.Conv2d) -> None:
         w_deq = _dequantize_conv_weight(conv)
         if w_deq.device != x.device:
             w_deq = w_deq.to(x.device)
+        w_deq = w_deq.to(x.dtype)
         return F.conv2d(x, w_deq, conv.bias, conv.stride, conv.padding, conv.dilation, conv.groups)
 
     conv.forward = nf4_forward
-    conv._nf4_patched = True
 
 
 def get_qlora_v3_model(
@@ -102,7 +136,7 @@ def get_qlora_v3_model(
     for param in model.parameters():
         param.requires_grad = False
 
-    q_path_modules = set(get_mbconv_q_path_names(model))  # Must capture BEFORE PEFT wrapping
+    q_path_modules = set(get_mbconv_q_path_names(model))
 
     if target_modules is None:
         target_modules = list(q_path_modules)
@@ -132,7 +166,6 @@ def get_qlora_v3_model(
         if base_layer.kernel_size[0] != 1 or base_layer.kernel_size[1] != 1:
             continue
         _quantize_conv_to_nf4(base_layer)
-        _patch_conv_forward(base_layer)
         num_quantized += 1
 
     trainable = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)
