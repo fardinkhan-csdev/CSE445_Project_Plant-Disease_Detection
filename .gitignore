@@ -7,6 +7,9 @@
 venv/
 env/
 
+# ── Internal tool config ─────────────────────────────────────────────────
+.freebuff/
+
 # ── Python ───────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
@@ -82,6 +85,11 @@ Desktop.ini
 # ── Presentation build scripts (one-time use) ──────────────────────────
 create_presentation.py
 fix_table.py
+
+# ── Duplicate / backup files ────────────────────────────────────────────
+*- Copy*
+*-copy*
+paper_submission.zip
 
 # ══════════════════════════════════════════════════════════════════════════
 # WHAT IS TRACKED (kept in git):
