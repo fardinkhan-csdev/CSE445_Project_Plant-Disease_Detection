@@ -18,7 +18,7 @@ A comparative study of parameter-efficient fine-tuning (PEFT) methods for plant 
 py -3.11 -m pip install -r requirements.txt
 
 # 2. Prepare assets (one-time download)
-py -3.11 download_assets.py
+py -3.11 utils/download_assets.py
 
 # 3a. V3 training (current — LoRA + QLoRA + QA-LoRA)
 py -3.11 launcher_v3.py
@@ -33,7 +33,7 @@ py -3.11 main_v3.py qalora     # QA-LoRA V3 (group-wise quant)
 py -3.11 launcher_test_v3.py
 
 # 5. Generate dashboard
-py -3.11 generate_dashboard.py
+py -3.11 utils/generate_dashboard.py
 
 # 6. Launch web UI
 py -3.11 run_web_ui.py
@@ -90,7 +90,12 @@ py -3.11 main.py qklora        # V1 Q/K LoRA
 ├── evaluation/
 │   ├── metrics.py                   # Metrics calculation
 │   ├── confusion_matrix.py          # Confusion matrix visualization
-│   └── evaluator.py                 # Evaluator class
+│   ├── evaluator.py                 # Evaluator class
+│   ├── eval_all_v3.py               # V3 batch evaluation
+│   ├── eval_plantdoc.py             # PlantDoc evaluation
+│   ├── eval_fullft_baseline.py      # Full fine-tuning baseline
+│   ├── rank_experiments.py          # Cross-method ranking script
+│   └── plantdoc_mapping.py          # PlantVillage ↔ PlantDoc label mapping
 ├── experiments/
 │   └── results/                     # All experiment outputs
 │       ├── checkpoints/             # Model checkpoints
@@ -105,7 +110,34 @@ py -3.11 main.py qklora        # V1 Q/K LoRA
 ├── utils/
 │   ├── logger.py                    # Logging setup
 │   ├── visualization.py             # Training curves, class metrics
-│   └── memory_tracker.py            # GPU memory tracking
+│   ├── memory_tracker.py            # GPU memory tracking
+│   ├── download_assets.py           # One-time asset preparation
+│   ├── download_plantdoc.py         # PlantDoc dataset download
+│   ├── generate_dashboard.py        # HTML dashboard generator
+│   ├── generate_method_diagrams.py  # Method diagram generator
+│   ├── generate_metric_chart.py     # Metric chart generator
+│   ├── generate_paper_figures.py    # Paper figure generator
+│   └── combine_training_curves.py   # Training curve combiner
+├── tests/
+│   ├── test_checkpoint_saving.py    # Checkpoint saving tests
+│   ├── test_plantdoc_mapping.py     # PlantDoc mapping tests
+│   ├── test_split_logic.py          # Data split tests
+│   ├── simple_test.py               # Simple integration test
+│   ├── test_code.py                 # Code validation tests
+│   ├── test_peft_quant.py           # PEFT quantization tests
+│   └── test_v3_fixes.py             # V3 fix verification tests
+├── adaptation/
+│   ├── adabn_adapter.py             # AdaBN adaptation
+│   └── shot_adapter.py              # SHOT adaptation
+├── docs/
+│   ├── architecture_design_v3.md    # Architecture design document
+│   ├── 02_HOW_IT_WORKS.md           # How it works explanation
+│   ├── EVERYTHING_EXPLAINED.md      # Comprehensive explanation
+│   ├── FULL_PIPELINE.md             # Full pipeline documentation
+│   └── ...                          # Additional documentation files
+├── paper_submission/
+│   ├── ieee_paper.tex               # IEEE paper source
+│   └── IEEEtran.cls                 # IEEE LaTeX template
 ├── _archive/
 │   ├── stale/                       # Outdated docs, research reports
 │   └── old_useful/                  # Legacy V1/V2 scripts
@@ -115,17 +147,15 @@ py -3.11 main.py qklora        # V1 Q/K LoRA
 ├── launcher.py                      # V1 interactive launcher
 ├── launcher_test_v3.py              # V3 evaluation launcher
 ├── launcher_test.py                 # V1 evaluation launcher
-├── rank_experiments.py              # Cross-method ranking script
-├── generate_dashboard.py            # HTML dashboard generator
-├── download_assets.py               # One-time asset preparation
-├── download_plantdoc.py             # PlantDoc dataset download
-├── plantdoc_mapping.py              # PlantVillage ↔ PlantDoc label mapping
 ├── run_plantdoc_evaluation.py       # PlantDoc evaluation runner
-├── eval_all_v3.py                   # V3 batch evaluation
-├── eval_plantdoc.py                 # PlantDoc evaluation
 ├── run_web_ui.py                    # Web UI launcher
+├── pull.bat                         # Git pull helper
+├── push.bat                         # Git commit & push helper
+├── DOWNLOAD_ASSETS.bat              # Windows asset download script
+├── RUN_WEB_UI.bat                   # Windows web UI launcher
+├── RUN_FULLFT_BASELINE.bat          # Windows baseline runner
 ├── requirements.txt                 # Python dependencies
-└── architecture_design_v3.md        # Current architecture document
+└── README.md                        # This file
 ```
 
 ## Dataset
@@ -159,5 +189,5 @@ Features:
 - Requires **Python 3.11** — do not use other versions
 - Designed for RTX 5060 with 8GB VRAM
 - Early stopping supported via `training.early_stopping_patience`
-- `download_assets.py` must be run once before training
+- `utils/download_assets.py` must be run once before training
 - V1 and V3 tracks coexist; V3 is the current recommended track
