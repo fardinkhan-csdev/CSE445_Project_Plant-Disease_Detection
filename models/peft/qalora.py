@@ -1,10 +1,16 @@
 """QA-LoRA for EfficientNet-B0 — faithful to Xu et al., ICLR 2024.
 
 Real QA-LoRA:
-  - Group-wise true integer quantization: each output channel's weights split into L groups,
+  - Group-wise integer quantization: each output channel's weights split into L groups,
     each group has its own learnable scale and zero-point (increases quantization DOF).
-    Weights are stored as actual INT4 integers (not FP32 fake-quantized), matching the paper's
-    protocol of loading a true quantized base before fine-tuning.
+    Weights are stored as actual INT4 integers (range [-8, 7]) and frozen at init
+    (true quantized base, not fake-quantized FP32). During forward, weights are
+    dequantized with the current (learnable) scale/zero-point:
+        W = (weight_q - zero_point) * scale
+    This is a fake-quant dequant in the forward pass, applied on top of a true-quant
+    base — the same pattern used in QA-LoRA's official implementation, where the
+    quantized base is loaded from disk and only the LoRA adapters (and quant params)
+    receive gradients.
   - Zero-point merge rule: after fine-tuning, zero-points are updated to absorb LoRA adapters
     into quantized weights without FP16 fallback (paper's Algorithm 1).
 
@@ -15,7 +21,7 @@ Reference Algorithm 1 from paper (adapted for Conv2d):
   quantization: W_q = clamp(round(W / alpha_j + beta_j), -8, 7)  -- INT4 asymmetric
   merge rule: beta_new = beta - scaling * (lora_B @ lora_A.T) / alpha_j
   forward:
-    W = dequantize(weight_q, scale, zp)  -- true integer base, not fake-quant
+    W = dequantize(weight_q, scale, zp)  -- true-quant base, dequant with learnable zp
     result = conv2d(x, W)
     result += (QA(x_unfold) * (D_in//L)) @ lora_A.T @ lora_B.T * scaling
 """
@@ -123,7 +129,7 @@ class QALoRAConv2d(nn.Module):
         lora_out = lora_out.transpose(1, 2)
 
         l_out_h = (H + 2 * self.padding[0] - k_h) // self.stride[0] + 1
-        l_out_w = (H + 2 * self.padding[1] - k_w) // self.stride[1] + 1
+        l_out_w = (W + 2 * self.padding[1] - k_w) // self.stride[1] + 1
         lora_spatial = lora_out.view(B, self.out_channels, l_out_h, l_out_w)
 
         return out + lora_spatial

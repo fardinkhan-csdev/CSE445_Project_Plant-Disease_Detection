@@ -6,7 +6,7 @@ A comparative study of parameter-efficient fine-tuning (PEFT) methods for plant 
 
 | Method | Quantization | Trainable Params | Checkpoint Size | Test Accuracy |
 |--------|-------------|------------------|-----------------|---------------|
-| **QA-LoRA** | Group-wise INT8 + grouped LoRA | 242k | 9.5 MB | **99.52%** |
+| **QA-LoRA** | Group-wise INT4 [-8,7] + grouped LoRA | 242k | 9.5 MB | **99.52%** |
 | **Q/K LoRA** | INT8 Q-path + FP32 SE (K-path) | 445k | 12.1 MB | 99.22% |
 | **QLoRA** | bitsandbytes NF4 on Q-path | 193k | 7.6 MB | 98.91% |
 | **LoRA** | None (FP32 backbone) | 193k | 18.1 MB | 98.89% |
@@ -141,7 +141,7 @@ py -3.11 main.py qklora        # V1 Q/K LoRA
 |--------|----------------|-------------|----------------|
 | **LoRA V3** | Hu et al. 2021 | None | PEFT LoRA on pointwise convs + merge support |
 | **QLoRA V3** | Dettmers et al. 2023 | bitsandbytes NF4 | Real 4-bit NF4 quantization via bitsandbytes |
-| **QA-LoRA V3** | Xu et al. 2024 | Group-wise INT8 | Algorithm 1: group-wise quant + grouped LoRA A |
+| **QA-LoRA V3** | Xu et al. 2024 | Group-wise INT4 [-8,7] | Algorithm 1: group-wise quant + grouped LoRA A |
 
 ## Web UI
 

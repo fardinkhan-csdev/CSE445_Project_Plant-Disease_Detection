@@ -22,7 +22,7 @@ This document contains technical explanations, architectural insights, limitatio
 
 ### 1.3 QA-LoRA (Quantization-Aware LoRA)
 - **Paper**: Xu et al. 2024 (ICLR)
-- **Mechanism**: Group-wise INT8 quantization with learned scale/zero-point per group. LoRA A is grouped to `(L, rank)` instead of `(D_in, rank)`. Does not use PEFT — `QALoRAConv2d` replaces `nn.Conv2d` directly.
+- **Mechanism**: Group-wise INT4 `[-8, 7]` quantization with learned scale/zero-point per group. LoRA A is grouped to `(L, rank)` instead of `(D_in, rank)`. Does not use PEFT — `QALoRAConv2d` replaces `nn.Conv2d` directly.
 - **Targets**: Q-path pointwise convs + features.8.0 + classifier.fc
 - **Trainable params**: ~242k
 - **Result**: **99.52% test accuracy**, 9.5 MB checkpoint — **best overall method**
@@ -36,9 +36,9 @@ This document contains technical explanations, architectural insights, limitatio
 
 ### Why QA-LoRA Outperforms
 
-1. **Implicit Regularization**: INT8 quantization acts as implicit regularizer, preventing overfitting while maintaining representation quality.
+1. **Implicit Regularization**: INT4 quantization acts as implicit regularizer, preventing overfitting while maintaining representation quality.
 2. **Precision Allocation**: Group-wise quantization provides more quantization degrees of freedom than per-channel. The grouped LoRA A balances the increased quantization DOF.
-3. **True Integer Base**: QA-LoRA uses true INT8 integer weights (not fake-quant), matching the paper's deployment protocol exactly.
+3. **True Integer Base**: QA-LoRA uses true INT4 integer weights (frozen at init, dequantized in forward with learnable scale/zp), matching the paper's deployment protocol.
 
 ---
 

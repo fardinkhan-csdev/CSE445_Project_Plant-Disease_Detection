@@ -4,7 +4,9 @@ Difference from V1 QLoRA:
   V1: custom INT8 per-channel quantization (weight-only, CNN workaround)
   V3: uses bitsandbytes 4-bit NF4 quantization on Q-path pointwise convs,
       matching Dettmers et al. (2023) more closely.
-  V3 compute dtype: matches input dtype, consistent with autocast.
+  V3 compute dtype: bfloat16, matching the paper's BF16 computation requirement
+      (Dettmers et al. 2023 §4). Weights are dequantized to BF16 in the forward
+      pass, then cast to the autocast input dtype if needed.
 
 Strategy:
   1. Build backbone, locate Q-path pointwise convs
@@ -29,6 +31,8 @@ try:
     BNB_AVAILABLE = True
 except ImportError:
     BNB_AVAILABLE = False
+
+COMPUTE_DTYPE = torch.bfloat16
 
 
 class _QStateFor4bit:
@@ -103,6 +107,7 @@ def _dequantize_conv_weight(conv: nn.Conv2d) -> torch.Tensor:
     q_state = _build_q_state(conv)
     w_deq = bnb_f.dequantize_4bit(conv.q_weight, q_state)
     w_deq = w_deq.reshape(conv.out_channels, conv.in_channels, 1, 1)
+    w_deq = w_deq.to(COMPUTE_DTYPE)
     return w_deq
 
 
@@ -115,7 +120,7 @@ def _patch_conv_forward(conv: nn.Conv2d) -> None:
         w_deq = _dequantize_conv_weight(conv)
         if w_deq.device != x.device:
             w_deq = w_deq.to(x.device)
-        w_deq = w_deq.to(x.dtype)
+        w_deq = w_deq.to(COMPUTE_DTYPE).to(x.dtype)
         return F.conv2d(x, w_deq, conv.bias, conv.stride, conv.padding, conv.dilation, conv.groups)
 
     conv.forward = nf4_forward

@@ -371,7 +371,7 @@ Standard per-channel quantization has too few parameters relative to LoRA adapte
 1. Freeze backbone weight W (shape: C_out × C_in × 1 × 1)
 2. Reshape to (C_out, L, C_in/L) — L groups per output channel
 3. Learn scale and zero_point per group: (C_out, L)
-4. Quantize: W_q = round(W / scale) + zero_point  (true INT8 integers)
+4. Quantize: W_q = round(W / scale) + zero_point  (true INT4 integers, range [-8, 7])
 5. During forward:
    a. Dequantize: W_dequant = (W_q - zp) * scale
    b. Compute grouped LoRA: unfold input → pool to L dims → multiply by lora_A (L, rank)
@@ -381,11 +381,11 @@ Standard per-channel quantization has too few parameters relative to LoRA adapte
 
 ### Key difference from QLoRA
 - QLoRA uses NF4 (4-bit, 16 levels) — very aggressive quantization
-- QA-LoRA uses INT8 (8-bit, 256 levels) with group-wise scaling — less aggressive but more structured
+- QA-LoRA uses INT4 (4-bit, 16 levels, range [-8, 7]) with group-wise scaling — more aggressive but structured by per-group learned scale/zp
 - QA-LoRA does **not** use PEFT library — it replaces `nn.Conv2d` directly with `QALoRAConv2d`
 
 ### In our project
-- **Quantization**: Group-wise INT8 (true integer, not fake-quant)
+- **Quantization**: Group-wise INT4 [-8, 7] (true integer base, frozen at init; learnable scale/zp used for forward dequant)
 - **Groups (L)**: 4
 - **Targets**: Q-path pointwise convs + `features.8.0` + `classifier.fc`
 - **Trainable params**: ~242k
@@ -402,7 +402,7 @@ Standard per-channel quantization has too few parameters relative to LoRA adapte
 
 ### Q-Path (Quantized)
 - **Layers**: MBConv 1×1 pointwise convolutions
-- **Precision**: INT8 quantization
+- **Precision**: INT4 quantization (range [-8, 7])
 - **LoRA rank**: 16 (higher rank to compensate for quantization)
 - **Rationale**: These layers handle channel projection and contain most parameters
 

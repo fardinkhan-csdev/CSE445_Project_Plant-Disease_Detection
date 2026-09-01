@@ -71,7 +71,7 @@ Run `download_assets.py` once to prepare:
 
 ### QA-LoRA (V3)
 - **Paper**: Xu et al. 2024 (ICLR)
-- **Quantization**: Group-wise INT8 with learned scale/zero-point per group
+- **Quantization**: Group-wise INT4 `[-8, 7]` with learned scale/zero-point per group
 - **LoRA A**: Grouped — shape `(L, rank)` instead of `(D_in, rank)`
 - **Targets**: Q-path pointwise convs + `features.8.0` + `classifier.fc`
 - **Does not use PEFT** — `QALoRAConv2d` replaces `nn.Conv2d` directly
@@ -88,8 +88,8 @@ Run `download_assets.py` once to prepare:
 
 | Layer | LoRA V3 | QLoRA V3 | QA-LoRA V3 | Q/K LoRA |
 |-------|---------|----------|------------|----------|
-| MBConv expand 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ✅ INT8 + adapter |
-| MBConv project 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ✅ INT8 + adapter |
+| MBConv expand 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise INT4 + adapter | ✅ INT8 + adapter |
+| MBConv project 1×1 | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise INT4 + adapter | ✅ INT8 + adapter |
 | Head conv (`features.8.0`) | ✅ adapter | ✅ NF4 + adapter | ✅ group-wise + adapter | ❌ frozen |
 | SE `fc1`/`fc2` | ❌ frozen | ❌ frozen | ❌ frozen | ✅ FP32 + adapter (r=4) |
 | Depthwise 3×3 | ❌ frozen | ❌ frozen | ❌ frozen | ❌ frozen |

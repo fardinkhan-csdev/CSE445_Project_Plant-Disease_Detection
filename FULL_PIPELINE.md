@@ -210,13 +210,13 @@ Each EfficientNet-B0 MBConv block contains:
 - **Paper**: Xu et al. 2024 (ICLR)
 
 **How it works (Algorithm 1 from paper):**
-1. **Group-wise INT8 quantization**: Split each output channel's weights into `L` groups, each with its own learned `scale` and `zero_point`. Weights stored as true INT8 integers.
+1. **Group-wise INT4 quantization**: Split each output channel's weights into `L` groups, each with its own learned `scale` and `zero_point`. Weights stored as true INT4 integers (range `[-8, 7]`), frozen at init.
 2. **Grouped LoRA A**: Shape `(L, rank)` instead of `(D_in, rank)`. Input unfolded to patches, then `adaptive_avg_pool1d` reduces `D_in` to `L` groups.
 3. **Standard LoRA B**: Shape `(C_out, rank)`, same as vanilla LoRA.
 4. Does **not** use PEFT — `QALoRAConv2d` replaces `nn.Conv2d` directly.
 
 **Targets**: Q-path pointwise convs + `features.8.0` + `classifier.fc`
-**Quantization**: Group-wise INT8 (true integer, not fake-quant)
+**Quantization**: Group-wise INT4 `[-8, 7]` (true integer base frozen at init; learnable scale/zp used in forward dequant)
 **Groups (L)**: 4
 **Trainable params**: ~242k
 **Checkpoint**: ~9.5 MB
