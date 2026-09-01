@@ -1,0 +1,368 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{balance}
+\usepackage{float}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Curriculum Fine-Tuning of Reasoning-Capable Small Language Models for Agentic Tool-Calling on Consumer Hardware}
+\author{\IEEEauthorblockN{Fardin Khan}
+\IEEEauthorblockA{\textit{dept. of ECE} \\
+\textit{North South University}\\
+Dhaka, Bangladesh \\
+fardinkhan.cs.dev@gmail.com
+}
+}
+\maketitle
+
+\begin{abstract}
+We investigate the challenge of teaching reasoning-capable small language models to perform agentic tool calling. Starting from VibeThinker-3B, a 3-billion-parameter reasoning model fine-tuned with reinforcement learning for chain-of-thought reasoning, we apply a four-stage curriculum---basic tool calling, ReAct multi-step reasoning, long-horizon workflows, and professional real-world data---to teach the model to invoke external tools. All training runs on a single laptop GPU (8\,GB VRAM) using QLoRA with $r=8$. Our central finding is a fundamental conflict: the model successfully learns to identify and call the correct tools (80\% function match rate on held-out real-world tasks), but its RL-trained reasoning reflex consumes the entire generation budget at inference time, preventing tool calls from being produced. We characterize this \textit{reasoning-action conflict} and show that it is not merely architectural but \textit{computationally imposed}: on consumer hardware with 8GB VRAM, the token budget required for extended chain-of-thought reasoning directly competes with the budget needed for structured tool calls, making both capabilities simultaneously active impractical within practical latency and limited memory capacity. We propose \textit{think-skip}, a lightweight prompt-level workaround that suppresses reasoning to enable tool invocation. While think-skip resolves the immediate generation bottleneck, it does so by disabling the very capability that makes reasoning models valuable. This result reveals an open problem: current fine-tuning approaches cannot yet make reasoning and tool calling coexist naturally in small models on resource-limited hardware. Our curriculum and think-skip workaround are available as practical tools for researchers working with reasoning models in agentic settings.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Small Language Models, Agentic AI, Tool Calling, Curriculum Learning, Fine-Tuning, LoRA, Consumer Hardware
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+The emergence of large language models (LLMs) with tool-calling capabilities has enabled a new class of agentic systems that can reason about tasks and interact with external APIs~\cite{yao2023react, schick2024toolformer}. However, deploying such systems requires either closed source model API access or substantial computational resources, placing agentic AI beyond the reach of most researchers and students~\cite{anthropic2024claude, openai2024gpt4}.
+
+Recent work has explored small language models (SLMs) for resource-constrained deployments~\cite{microsoft2024phi4, meta2024llama32, alibaba2024qwen25}. While these models demonstrate strong general capabilities, they typically lack either deep reasoning ability or tool-calling proficiency---never both. Reasoning models like DeepSeek-R1~\cite{guo2025deepseek} excel at chain-of-thought but cannot invoke external tools. Tool-calling models like Hermes~\cite{nousresearch2024hermes} can invoke functions but lack the reasoning depth needed for complex multi-step agentic workflows.
+
+This gap is particularly pronounced at the 3-billion-parameter scale, where model capacity is limited and every parameter must be used efficiently. The DualTune framework~\cite{kadekodi2025dualtune} identifies the combination of reasoning and tool calling in small models as an open problem, noting that reasoning models incur prohibitively high latency when used for agentic tasks. On consumer hardware (8GB VRAM), the problem is further amplified: chain-of-thought reasoning generates hundreds to thousands of tokens per step, each consuming both compute time and KV-cache memory. In a multi-step agentic loop, this reasoning step can dominate the total inference budget, leaving insufficient resources for the actual tool invocations and their processing.
+
+We address this gap through three contributions:
+
+\begin{itemize}
+\item \textbf{Four-stage synthetic-to-real curriculum}: We demonstrate that a staged training pipeline---progressing from basic tool calling through ReAct reasoning, long-horizon workflows, and finally professional real-world data---can teach a reasoning model to identify and invoke the correct tools for novel tasks (80\% function match rate on held-out real-world data).
+
+\item \textbf{Characterization of the reasoning-action conflict}: We identify a fundamental conflict in reasoning models: the same RL-trained reflex that enables deep reasoning prevents tool calls from being produced at inference time. We propose \textit{think-skip}, a practical workaround, but show that it resolves the conflict only by suppressing reasoning---revealing an open problem for the field.
+
+\item \textbf{Consumer-hardware deployment}: We show that the complete training pipeline runs on a single laptop GPU (8\,GB VRAM) using parameter-efficient fine-tuning, making this line of research accessible without server-grade hardware.
+\end{itemize}
+
+\section{Literature Review}
+\label{sec:related}
+
+\subsection{Tool-Calling Language Models}
+Tool-augmented language models have evolved from simple function invocation~\cite{schick2023toolformer} to complex multi-step agentic systems~\cite{yao2023react, wu2023autogen}. The Hermes Function-Calling dataset~\cite{nousresearch2024hermes} and ToolACE~\cite{liu2024toolace} provide high-quality training data for tool calling, while xLAM~\cite{zhang2024xlam} explores scaling laws for function-calling accuracy. However, these models are typically trained as general-purpose assistants with tool-calling ability grafted on, rather than reasoning-first models adapted for tool use.
+
+\subsection{Reasoning Models}
+Chain-of-thought prompting~\cite{wei2022cot} and its trained variants~\cite{guo2025deepseek, yang2024qwen25} have dramatically improved LLM performance on complex tasks. The ``thinking'' paradigm---where models generate explicit reasoning traces before answering---has become standard for difficult problems. However, this paradigm creates a fundamental conflict with tool calling: the model must stop reasoning and produce structured output, but the training signal encourages continued deep thinking.
+
+\subsection{Curriculum Learning for LLMs}
+Curriculum learning~\cite{bengio2009curriculum}---training on progressively harder examples---has proven effective for NLP tasks~\cite{xiang2024curriculum}. However, no prior work has applied curriculum learning specifically to agentic tool-calling models, where the ``difficulty'' dimension spans both task difficulty and output format.
+
+\subsection{Small Models for Agentic AI}
+The SLM-for-agents space is rapidly growing~\cite{futureagi2026slm}. Phi-4~\cite{abdin2024phi4}, Llama 3.2~\cite{meta2024llama32}, and Ministral~\cite{mistral2024ministral} all target agentic use cases, but none specifically address the reasoning-plus-tool-calling combination at the 3B scale. Our work fills this specific gap.
+
+\section{Proposed Methodology}
+\label{sec:method}
+
+\subsection{Base Model}
+We use VibeThinker-3B, a 3-billion-parameter causal language model based on Qwen2.5-3B-Instruct~\cite{yang2024qwen25}, fine-tuned with reinforcement learning to perform extended chain-of-thought reasoning. The model naturally produces internal reasoning (delimited by \texttt{<thought>} tags) before generating answers. Our approach retains this reasoning capability while teaching the model to produce structured tool calling, and the model learns to reason about tasks and invoke the appropriate tools as part of its reasoning process.
+
+\subsection{Four-Stage Curriculum}
+\label{sec:curriculum}
+
+Our training pipeline progresses through four stages, each building on the previous:
+
+\begin{figure}[htbp]
+\centerline{\includegraphics{fig1_curriculum_1.png}}
+\caption{Four-stage curriculum training pipeline for fine-tuning VibeThinker-3B. The base model is progressively adapted through four stages: (1) basic tool calling on the Glaive  v2 dataset, (2) ReAct multi-step reasoning on 25 hand-crafted synthetic traces, (3) long-horizon conversational workflows with 30 traces containing 5--6 step action chains, and (4) professional real-world tool schemas from the NousResearch Hermes Function-Calling v1 dataset with 1,000 examples. Each stage saves a LoRA adapter checkpoint that is loaded as the starting point for the next stage.}
+\label{fig}
+\end{figure}
+
+\subsubsection{Stage 1: Basic Tool Calling}
+\textbf{Data}: Glaive Function-Calling dataset~\cite{glaive2023} (113K examples).
+\textbf{Objective}: Teach the model the basic format of tool invocation---function names, JSON argument schemas, and the \texttt{<tool\_call>} tag structure.
+\textbf{Configuration}: LoRA rank 16, 200 training steps, effective batch size 8.
+
+\subsubsection{Stage 2: ReAct Multi-Step Reasoning}
+\textbf{Data}: 16 hand-crafted ReAct traces plus 8 augmented variations (24 total).
+\textbf{Objective}: Introduce the Thought $\rightarrow$ \texttt{<tool\_call>} $\rightarrow$ Observation loop, enabling the model to chain multiple tool calls and reason about intermediate results.
+\textbf{Configuration}: LoRA rank 8 (reduced from Stage 1 for stability), 200 steps, learning rate $1 \times 10^{-4}$.
+
+\subsubsection{Stage 3: Long-Horizon Conversational Workflows}
+\textbf{Data}: Multi-step workflow traces (5--6 action chains) combined with conversational examples teaching \textit{when not to call tools}.
+\textbf{Objective}: Handle complex multi-step tasks and maintain natural conversation when tool calls are not needed.
+\textbf{Configuration}: Same as Stage 2, trained on top of Stage 2 checkpoint.
+
+\subsubsection{Stage 4: Professional Real-World Data}
+\textbf{Data}: 1,000 examples from NousResearch/hermes-function-calling-v1~\cite{nousresearch2024hermes} (ShareGPT format).
+\textbf{Objective}: Generalize beyond the synthetic examples to real-world tool schemas (Stripe APIs, IoT systems, DevOps tools, financial databases).
+\textbf{Configuration}: 1 epoch, 125 steps, same hyperparameters as Stage 3.
+
+\subsection{Memory-Efficient Training}
+All stages are trained on a single NVIDIA RTX 5060 Laptop GPU (8GB VRAM) using the following optimizations:
+
+\begin{itemize}
+\item \textbf{4-bit quantization} (QLoRA~\cite{dettmers2023qlora}): NF4 quantization with bfloat16 compute, reducing model memory from $\sim$6\,GB to $\sim$2\,GB.
+\item \textbf{Gradient checkpoint}: Trades $\sim$30\% \% compute time for $\sim$40\% \% VRAM savings by recomputing activations during the backward pass.
+\item \textbf{LoRA $r=8$}: Parameter-efficient adapters with only 0.9\% of total parameters trainable.
+\item \textbf{Batch size 1 with gradient accumulation 8}: Maintains effective batch size of 8 while fitting in memory.
+\item \texttt{PYTORCH\_CUDA\_ALLOC\_CONF=expandable\_segments:True}: Reduces CUDA memory fragmentation.
+\end{itemize}
+
+\subsection{Inference-Time Adaptation: The Reasoning-Action Conflict}
+\label{sec:thinkskip}
+
+A critical finding during evaluation was that the trained model could correctly identify the right tools (as demonstrated in Section~\ref{sec:results}) but could not produce tool calls at inference time. The model's RL-trained reasoning reflex---the same capability that makes it useful for complex tasks---needs the entire generation budget on internal thinking before reaching the point where tool calls would be outputted.
+
+This is not merely a behavioral issue but a \textit{computational} one. On our target hardware (8\,GB VRAM), each reasoning token requires KV-cache allocation, and VibeThinker-3B's RL training encourages chains of 500--2000 thinking tokens before any structured output. In a five-step ReAct loop, this translates to 2500--10000 reasoning tokens consuming the majority of the generation budget, leaving insufficient tokens---and VRAM---for tool call emission, observation processing, and later reasoning steps. The generation budget is limited, and in a low end consumer hardware, reasoning and tool calling are competing for the same limited hardware resource.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\columnwidth]{fig2_conflict_1.png}}
+\caption{The reasoning-action conflict on consumer hardware. When the user sends a prompt, the VibeThinker-3B model must decide whether to generate extended internal reasoning (left branch, red) or produce a structured tool call (right branch, green). Without \textit{think-skip}, the model's RL-trained reasoning reflex generates 500--2000 tokens of internal deliberation, exhausting the 2048-token generation budget and leaving only 48 tokens for output---insufficient for any tool call (0\% tool-call rate). With \textit{think-skip}, we get 100\% tool-call rate.}
+\label{fig}
+\end{figure}
+
+We propose \textbf{think-skip} as a practical workaround: appending \texttt{<thought>\textbackslash n\textbackslash n</thought>\textbackslash n\textbackslash n} to the prompt signals that reasoning is complete, allowing the model to proceed directly to tool call. As shown in Table~\ref{tab:thinkskip}, think-skip enables 100\% tool-call attempt rate. However, this fix works by \textit{suppressing} the model's reasoning capability---the very trait that motivated using a reasoning model in the first place. This reveals a fundamental open problem: on low grade hardware, current fine-tuning methods cannot yet make chain-of-thought reasoning and structured tool calling coexist naturally in small models, because the computational cost of extended thinking directly competes with the token budget required for agentic abilities.
+
+\begin{table}[t]
+\centering
+\caption{Think-Skip Impact on Tool-Calling Evaluation (2-case smoke test)}
+\label{tab:thinkskip}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Configuration} & \textbf{Tool-Call Rate} & \textbf{Function Match} \\
+\midrule
+Without think-skip & 0\% & 0\% \\
+With think-skip & 100\% & 50\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Evaluation Setup}
+We evaluate on held-out examples from the Hermes Function-Calling dataset~\cite{nousresearch2024hermes}, using a different random seed (999) than Stage 4's training split (3407) to ensure no overlap. We select 5 examples where the ground truth contains tool calls, covering domains unseen during training (environmental analysis, trading infrastructure, Java development, pharmaceuticals, ERP systems).
+
+\textbf{Metrics}:
+\begin{itemize}
+\item \textbf{Tool-call rate}: Percentage of prompts where the model emitted a \texttt{<tool\_call>} or \texttt{<tool>} block when one was expected.
+\item \textbf{Valid JSON rate}: Percentage of outputted tool calls that parse as valid JSON.
+\item \textbf{Function match rate}: Percentage of cases where at least one predicted function name matches the ground truth.
+\end{itemize}
+
+\usepackage{float}  % Add to preamble
+
+\section{Results}
+\label{sec:results}
+
+\begin{table}[H]
+\centering
+\caption{Evaluation Results: Stage 3 vs Stage 4}
+\label{tab:results}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Stage 3} & \textbf{Stage 4} \\
+\midrule
+Tool-call rate & 50\% & \textbf{100\%} \\
+Valid JSON rate & 0\% & \textbf{60\%} \\
+Function match rate & 50\% & \textbf{80\%} \\
+\bottomrule
+\end{tabular}
+
+\vspace{1em}
+
+\caption{Per-Case Results (Stage 4)}
+\label{tab:percase}
+\small
+\begin{tabular}{lp{2cm}p{1.8cm}cc}
+\toprule
+\textbf{\#} & \textbf{Task Domain} & \textbf{Expected} & \textbf{Match} & \textbf{JSON} \\
+\midrule
+1 & Environmental analysis & 3 functions & \checkmark & \checkmark \\
+2 & Trading infrastructure & 2 functions & \checkmark & $\times$ \\
+3 & Java compile/execute & 2 functions & \checkmark & \checkmark \\
+4 & Pharmaceutical research & 2 functions & $\times$ & $\times$ \\
+5 & ERP initialization & 4 functions & \checkmark & \checkmark \\
+\midrule
+& \textbf{Overall} & & \textbf{80\%} & \textbf{60\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{Curriculum Effectiveness}
+The four-stage curriculum demonstrates that synthetic data can effectively teach agentic capabilities before transferring to real-world data. Stages 1--3, using only 25--113K synthetic examples, teach the model the \textit{format} of tool calling. Stage 4 then teaches \textit{generalization}---the model applies learned formats to unknown domains and tool calling.
+
+This curriculum approach is particularly valuable for small models, which have limited capacity for simultaneous format learning and generalization. A single-stage approach on real data alone would waste a \textit{huge} portion of training capacity on format learning.
+
+\subsection{The Reasoning-Action Conflict}
+Our most significant finding is that reasoning and tool calling currently cannot coexist naturally in small fine-tuned models. The model successfully learned to identify and call the correct tools (80\% function match rate), but its reasoning reflex prevents these tool calls from being outputted at inference time. Think-skip fixed this only by disabling reasoning---a workaround, not a solution.
+
+This conflict is not specific to our model. Any reasoning model fine-tuned for tool calling will face the same issue: RL training that encourages thorough reasoning directly competes with the smaller, structured output that tool calling requires. Steve Scargall~\cite{scargall2026thinking} independently identified this issue in agentic workflows, proposing server-level configuration changes. Our prompt-level workaround is more of a local fix but equally limited.
+
+fixing this conflict without suppressing reasoning remains an open problem. Future approaches may need to train reasoning and tool calling as alternative capabilities rather than treating tool calls as interruptions to the reasoning process.
+
+\subsection{Computational Feasibility on Consumer Hardware}
+\label{sec:compute}
+
+The reasoning-action conflict is not purely a training problem---it is fundamentally a \textit{compute budget} problem. On our target hardware (NVIDIA RTX 5060, 8\,GB VRAM), the constraints are:
+
+\begin{itemize}
+\item \textbf{Token budget}: Generation is autoregressive; each token (whether reasoning or tool call) consumes one forward pass. VibeThinker-3B's RL training encourages 500--2000 thinking tokens before structured output. In a five-step agentic loop, reasoning alone can consume 2500--10000 tokens.
+\item \textbf{KV-cache pressure}: On 8\,GB VRAM, the KV-cache for a 3B model at 2048 context length requires $\sim$1.5\,GB. Extended reasoning chains grow the sequence length, increasing cache pressure and risking out-of-memory errors on multi-step loops.
+\item \textbf{Latency}: At $\sim$30 tokens/second on our RTX 5060 8GB GPU, 1000 reasoning tokens require $\sim$33 seconds per step. A five-step loop with full reasoning would take $\sim$3 minutes before producing any actionable output.
+\end{itemize}
+
+These constraints mean that even if a model \textit{could} produce both reasoning and tool calls, the computational cost of doing so on consumer hardware would be way too high for practical agentic use. The think-skip workaround is not just a simple patch---it is \textit{mandatory} for deploying reasoning models on resource-constrained hardware.
+
+This suggests that the path forward may require architectural innovations---such as conditional computation, where the model dynamically allocates its generation budget between reasoning and action, rather than simply more or better fine-tuning data.
+
+\subsection{Limitations}
+\begin{itemize}
+\item \textbf{Small evaluation set}: 5 examples is insufficient for statistical significance. Larger evaluations across more domains are needed.
+\item \textbf{Single-run results}: No confidence intervals or variance estimates. Results should be replicated.
+\item \textbf{No comparison baselines}: We do not compare against Hermes, xLAM, or other tool-calling models on standard benchmarks.
+\item \textbf{Token budget sensitivity}: Cases where the model generates lengthy reasoning still fail, suggesting think-skip is not fully robust.
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We took on the challenge of teaching a reasoning model to call tools. Using a four-stage curriculum, we successfully trained VibeThinker-3B to identify and invoke the correct tools for novel real-world tasks (80\% function match rate). However, we discovered a fundamental problem: the model's reasoning capability---the very trait that motivated using a reasoning model---prevents tool calls from being produced at inference time.
+
+Our contributions are: (1) a four-stage synthetic-to-real curriculum that teaches reasoning models to call tools accurately, (2) characterization of the reasoning-action conflict as an open problem in the field, and (3) a practical think-skip workaround that enables tool calling at the cost of disabling reasoning. All training runs on consumer hardware (8\,GB VRAM laptop GPU).
+
+The reasoning-action conflict remains unsolved. We have showed that this conflict is not just about behavior but computationally imposed. In a consumer hardware with 8GB VRAM, the token budget we need to get longer chain-of-thought reasoning directly competes with the budget needed for right tool invocations, making both abilities simultaneously active within practical hardware constraints. Future work should explore: (1) architectural solutions such as conditional computation that will be able to dynamically allocate generation budget between reasoning and action; (2) training methods that alternate reasoning traces with tool calls rather than treating tool calls as interruptions; and (3) inference-time strategies that adaptively modify thinking depth based on available compute. Additional directions include scaling to the full Hermes dataset (11K examples), evaluating against standard benchmarks (BFCL, ToolBench), and exploring multi-turn agentic conversations on low end consumer hardware.
+
+\section*{Acknowledgment}
+
+This work was performed fully on consumer hardware (NVIDIA RTX 5060 Laptop GPU, 8GB VRAM only), demonstrating that useful agentic AI research does not necessarily need server-grade infrastructure.
+
+\begin{thebibliography}{21}
+
+\bibitem{yao2023react}
+S.~Yao, J.~Zhao, D.~Yu, N.~Du, A.~Shafran, K.~Narasimhan, and Y.~Cao,
+``ReAct: Synergizing reasoning and acting in language models,''
+in \emph{Proc. Int. Conf. Learning Representations (ICLR)}, 2023.
+[Online]. Available: https://arxiv.org/abs/2210.03629
+
+\bibitem{schick2023toolformer}
+T.~Schick, J.~Dwivedi-Yu, R.~Dess\`{i}, R.~Raileanu, M.~Lomeli, L.~Zettlemoyer, N.~Cancedda, and T.~Scialom,
+``Toolformer: Language models can teach themselves to use tools,''
+in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~36, 2023.
+[Online]. Available: https://arxiv.org/abs/2302.04761
+
+\bibitem{anthropic2024claude}
+Anthropic,
+``The Claude 3 model family: Opus, sonnet, haiku,''
+Anthropic, Tech. Rep., 2024.
+[Online]. Available: https://www.anthropic.com/news/claude-3-family
+
+\bibitem{openai2024gpt4}
+OpenAI,
+``GPT-4 technical report,''
+OpenAI, Tech. Rep., 2024.
+[Online]. Available: https://arxiv.org/abs/2303.08774
+
+\bibitem{abdin2024phi4}
+M.~Abdin, J.~Aneja, H.~Behl, et~al.,
+``Phi-4 technical report,''
+Microsoft Research, Tech. Rep., 2024.
+[Online]. Available: https://arxiv.org/abs/2412.08905
+
+\bibitem{meta2024llama32}
+Meta~AI,
+``Llama 3.2: Revolutionizing edge AI and vision with open, customizable models,''
+Meta, Blog Post, Sep. 2024.
+[Online]. Available: https://ai.meta.com/blog/llama-3-2-connect-2024-vision-edge-mobile-devices/
+
+\bibitem{yang2024qwen25}
+A.~Yang, B.~Yang, B.~Hui, et~al.,
+``Qwen2.5 technical report,''
+Alibaba Group, Tech. Rep., 2024.
+[Online]. Available: https://arxiv.org/abs/2412.15115
+
+\bibitem{guo2025deepseek}
+D.~Guo, D.~Yang, H.~Zhang, et~al.,
+``DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning,''
+DeepSeek AI, Tech. Rep., 2025.
+[Online]. Available: https://arxiv.org/abs/2501.12948
+
+\bibitem{nousresearch2024hermes}
+NousResearch,
+``Hermes function calling v1,''
+HuggingFace Dataset, 2024.
+[Online]. Available: https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1
+
+\bibitem{kadekodi2025dualtune}
+R.~Kadekodi, Z.~Jin, K.~Kamahori, Y.~Gu, S.~Khatiri, N.~H.~Bayindirli, S.~Gorbunov, S.~Kim, and C.~Fallon,
+``DualTune: Decoupled fine-tuning for on-device agentic systems,''
+2025.
+[Online]. Available: https://arxiv.org/abs/2510.00229
+
+\bibitem{liu2024toolace}
+W.~Liu, et~al.,
+``ToolACE: Winning the points of LLM function calling,''
+2024.
+[Online]. Available: https://arxiv.org/abs/2409.00920
+
+\bibitem{zhang2024xlam}
+J.~Zhang, et~al.,
+``xLAM: A family of large action models to empower AI agent systems,''
+Salesforce AI Research, 2024.
+[Online]. Available: https://arxiv.org/abs/2409.03215
+
+\bibitem{wei2022cot}
+J.~Wei, X.~Wang, D.~Schuurmans, M.~Bosma, B.~Ichter, F.~Xia, E.~Chi, Q.~V.~Le, and D.~Zhou,
+``Chain-of-thought prompting elicits reasoning in large language models,''
+in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~35, 2022.
+[Online]. Available: https://arxiv.org/abs/2201.11903
+
+\bibitem{bengio2009curriculum}
+Y.~Bengio, J.~Louradour, R.~Collobert, and J.~Weston,
+``Curriculum learning,''
+in \emph{Proc. 26th Int. Conf. Machine Learning (ICML)}, Montreal, QC, Canada, ICML 2009: ~41--48.
+
+\bibitem{mistral2024ministral}
+Mistral~AI,
+``Ministral 3B and 8B,'' Oct. 2024.
+[Online]. Available: https://mistral.ai/news/ministral-3b-and-8b/
+
+\bibitem{glaive2023}
+Glaive~AI,
+``Glaive function calling v2 dataset,''
+HuggingFace Dataset, 2023.
+[Online]. Available: https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2
+
+\bibitem{dettmers2023qlora}
+T.~Dettmers, A.~Pagnoni, A.~Holtzman, and L.~Zettlemoyer,
+``QLoRA: Efficient finetuning of quantized LLMs,''
+in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~36, 2023.
+[Online]. Available: https://arxiv.org/abs/2305.14314
+
+\bibitem{wu2023autogen}
+Q.~Wu, G.~Bansal, J.~Zhang, Y.~Wu, B.~Li, E.~Zhu, L.~Jiang, P.~Zhang, S.~Zhang, J.~Liu, and C.~Wang, et~al.
+``AutoGen: Enabling next-gen LLM applications via multi-agent conversation,''
+2023.
+[Online]. Available: https://arxiv.org/abs/2308.08155
+
+\bibitem{scargall2026thinking}
+S.~Scargall,
+``Is thinking mode affecting your agentic workflows?'' May 2026.
+[Online]. Available: https://stevescargall.com/blog/2026/05/is-thinking-mode-affecting-your-agentic-workflows/
+
+\bibitem{futureagi2026slm}
+FutureAGI,
+``Small Language Models for Agentic AI in 2026: The Lineup, Trade-offs, and How to Build Multi-Agent Workflows,'' 2026.
+[Online]. Available: https://futureagi.com/blog/small-language-models-agentic-ai-2025/
+
+\end{thebibliography}
+
+\end{document}

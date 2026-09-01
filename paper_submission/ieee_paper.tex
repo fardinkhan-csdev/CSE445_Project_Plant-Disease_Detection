@@ -2,8 +2,9 @@
 \IEEEoverridecommandlockouts
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
-\usepackage{algorithmic}
 \usepackage{graphicx}
+\usepackage{float}
+\usepackage{algorithmic}
 \usepackage{textcomp}
 \usepackage{xcolor}
 \usepackage{balance}
@@ -61,9 +62,8 @@ QLoRA~\cite{dettmers2023qlora} combines 4-bit NormalFloat (NF4) storage with BF1
 QA-LoRA~\cite{xu2024qalora} argues that per-channel quantization creates an imbalance between quantizer degrees of freedom and adapter degrees of freedom, which prevents a true post-training merge without FP16 fallback. The paper proposes per-group integer quantization with a corresponding grouped LoRA factor and proves that the zero-point can absorb the adapter update, yielding a model that remains fully quantized after fine-tuning.
 
 \section{Method}
-\begin{figure*}[t]
-\centering
-\includegraphics[width=0.95\textwidth]{method_diagrams.png}
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.95\columnwidth]{method_diagrams.png}}
 \caption{Architecture diagrams of the three primary methods, all applied to a single pointwise $1\times 1$ convolution inside an MBConv block. The frozen base conv is shown in the lower-left of each panel, the trainable low-rank adapter in the upper-left, and an explanatory side panel on the right. (a) LoRA keeps the base in FP32 and learns FP32 factors $A$ and $B$. (b) QLoRA quantizes the base to 4-bit NormalFloat via bitsandbytes and dequantizes to BF16 at compute time, while keeping the LoRA factors in FP32. (c) Our QA-LoRA adaptation quantizes the base to group-wise INT4 $[-8, 7]$ with learnable per-group scale $\alpha_j$ and zero-point $\beta_j$, and uses a grouped low-rank factor $A \in \mathbb{R}^{L \times r}$. The base weights are frozen in all three methods; only the adapter (and, for QA-LoRA, the per-group scale and zero-point) receive gradients.}
 \label{fig:method}
 \end{figure*}
@@ -166,20 +166,12 @@ Q/K LoRA     & 444{,}536 & 12.1\,MB & 99.22\% & 0.9872 \\
 
 \noindent\textsuperscript{$\dagger$}\textit{Cited from~\cite{atila2021}; not re-run on our hardware. Reported on the same PlantVillage color split with EfficientNet-B0 fully fine-tuned.}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.95\columnwidth]{qalora_training_curves.png}
-\caption{Training curves for the QA-LoRA V3 run on PlantVillage. Top: training and validation cross-entropy loss per epoch. Bottom: training and validation accuracy per epoch. The validation accuracy plateaus at the test-set value within the first few epochs, consistent with the small trainable parameter count and the regularizing effect of INT4 quantization. Early stopping with patience 7 selects the checkpoint with the highest validation macro-F1.}
-\label{fig:qalora_curves}
-\end{figure}
-
 Three observations are worth highlighting. First, the trainable parameter count of QA-LoRA (242k) is 25\% higher than that of QLoRA (193k) because QA-LoRA exposes the per-group scale and zero-point as trainable parameters. Despite the larger adapter, the checkpoint is only 9.5\,MB because the INT4 storage is more compact than the FP32 fallback used during inference. Second, all three primary quantized methods (QLoRA and QA-LoRA) outperform full LoRA by a non-trivial margin, supporting the hypothesis that quantization acts as an implicit regularizer on this small dataset. Third, the deprecated Q/K LoRA is uniformly outperformed by QA-LoRA despite using more than twice as many trainable parameters (444k vs.\ 242k), which is the central empirical evidence for our decision to deprecate it.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.95\columnwidth]{metric_comparison.png}
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.95\columnwidth]{metric_comparison.png}}
 \caption{Test accuracy and macro-averaged F1 on the PlantVillage test set for the three primary methods. QA-LoRA leads on both metrics, and the gap between QA-LoRA and the two FP32-LoRA-based methods (LoRA, QLoRA) is substantially larger than the gap between the FP32-LoRA methods themselves, indicating that the group-wise INT4 design contributes more than the mere presence of quantization. The horizontal red dotted line marks the cited full-FT accuracy (99.56\%~\cite{atila2021}) as a reference; QA-LoRA's 99.52\% is within 0.04 percentage points of this reference.}
-\label{fig:metric}
+\label{fig:metrics}
 \end{figure}
 
 \subsection{PlantDoc cross-domain evaluation}
@@ -238,9 +230,8 @@ QLoRA    & 192{,}816 (4.5\%)  &  7.6\,MB & 4{,}694 & 98.91\% \\
 
 \noindent\textsuperscript{$\ddagger$}\textit{Estimated; not re-measured in this study.}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.95\columnwidth]{param_efficiency.png}
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.95\columnwidth]{param_efficiency.png}}
 \caption{Test accuracy vs.\ trainable-parameter count for the three PEFT methods and the cited full-FT reference, plotted on a log-scale $x$ axis. QA-LoRA matches the cited full-FT accuracy (99.52\% vs.\ 99.56\%) at 5.7\% of the parameter cost, while LoRA and QLoRA underperform by 0.6--0.7 percentage points. The horizontal dotted lines mark the two accuracy levels for direct visual comparison. Note that the $x$-axis spans more than an order of magnitude, so the apparent clustering of the three PEFT methods on the left side understates their true separation from full fine-tuning.}
 \label{fig:parameff}
 \end{figure}
